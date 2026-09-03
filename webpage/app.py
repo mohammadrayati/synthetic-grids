@@ -53,6 +53,8 @@ LOAD_PROFILES_DIR = PROJECT_ROOT / "data" / "load_power"
 WEBPAGE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = WEBPAGE_DIR / "static"
 
+GRID_CACHE_SIZE = 64  # >= 35 grids (one cache entry per grid_id), generous headroom
+
 app = Flask(__name__)
 
 # EPSG:2056 (Swiss LV95, meters, easting/northing) -> EPSG:4326 (WGS84, lat/lon degrees), for the
@@ -172,7 +174,7 @@ def get_time_range() -> dict:
     }
 
 
-@functools.lru_cache(maxsize=64)
+@functools.lru_cache(maxsize=GRID_CACHE_SIZE)
 def get_meta(grid_id: str) -> dict:
     row = grid_row_for_id(grid_id)
     return {
@@ -214,7 +216,7 @@ def compute_prosumer_stats(grid_id: str) -> dict:
     return stats
 
 
-@functools.lru_cache(maxsize=64)
+@functools.lru_cache(maxsize=GRID_CACHE_SIZE)
 def get_topology(grid_id: str) -> dict:
     grid_dir = PROJECT_ROOT / folder_rel_for_grid_id(grid_id)
     buses = pd.read_csv(grid_dir / "buses.csv")
@@ -285,7 +287,7 @@ def get_topology(grid_id: str) -> dict:
     }
 
 
-@functools.lru_cache(maxsize=64)
+@functools.lru_cache(maxsize=GRID_CACHE_SIZE)
 def get_pmu_penetration(grid_id: str) -> dict:
     """penetration_level (e.g. '5%') -> {level_pct, buses: [...], feeder_root_bus}. Level '0%' is
     added explicitly (not in the CSV - 0% penetration means no PMU-equipped bus at all, still
@@ -303,7 +305,7 @@ def get_pmu_penetration(grid_id: str) -> dict:
     return levels
 
 
-@functools.lru_cache(maxsize=64)
+@functools.lru_cache(maxsize=GRID_CACHE_SIZE)
 def get_bus_df(grid_id: str) -> pd.DataFrame:
     with _load_lock:
         path = ground_truth_dir(grid_id) / "bus.parquet"
@@ -313,7 +315,7 @@ def get_bus_df(grid_id: str) -> pd.DataFrame:
         return df
 
 
-@functools.lru_cache(maxsize=64)
+@functools.lru_cache(maxsize=GRID_CACHE_SIZE)
 def get_line_df(grid_id: str) -> pd.DataFrame:
     with _load_lock:
         path = ground_truth_dir(grid_id) / "line.parquet"
@@ -323,12 +325,12 @@ def get_line_df(grid_id: str) -> pd.DataFrame:
         return df
 
 
-@functools.lru_cache(maxsize=64)
+@functools.lru_cache(maxsize=GRID_CACHE_SIZE)
 def get_unique_timestamps(grid_id: str) -> pd.DatetimeIndex:
     return get_bus_df(grid_id).index.unique().sort_values()
 
 
-@functools.lru_cache(maxsize=64)
+@functools.lru_cache(maxsize=GRID_CACHE_SIZE)
 def get_bus_full_df(grid_id: str) -> pd.DataFrame:
     """Like get_bus_df but also carries va_degree - needed for PMU readings (magnitude+phase),
     not just the vm_pu-only voltage overlay. Kept as a separate cached frame so the existing
@@ -341,7 +343,7 @@ def get_bus_full_df(grid_id: str) -> pd.DataFrame:
         return df
 
 
-@functools.lru_cache(maxsize=64)
+@functools.lru_cache(maxsize=GRID_CACHE_SIZE)
 def get_load_profile_df(grid_id: str) -> pd.DataFrame:
     with _load_lock:
         path = load_profile_csv_path(grid_id)
@@ -355,7 +357,7 @@ def get_load_profile_df(grid_id: str) -> pd.DataFrame:
         return df
 
 
-@functools.lru_cache(maxsize=64)
+@functools.lru_cache(maxsize=GRID_CACHE_SIZE)
 def get_loads_meta(grid_id: str) -> pd.DataFrame:
     path = PROJECT_ROOT / folder_rel_for_grid_id(grid_id) / "loads.csv"
     return pd.read_csv(path)[["load", "bus"]]

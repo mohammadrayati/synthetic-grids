@@ -51,7 +51,8 @@ def main():
 
     loads = pd.read_csv(gdir / "loads.csv")
     sm_vm_std = noise_std(cfg, "smart_meter", "vm_pu", args.noise)
-    sm_pq_std = noise_std(cfg, "smart_meter", "p_mw", args.noise)
+    sm_p_std = noise_std(cfg, "smart_meter", "p_mw", args.noise)
+    sm_q_std = noise_std(cfg, "smart_meter", "q_mvar", args.noise)
     rows = []
     for _, ld in loads.iterrows():
         p_mw = lp_row[f"load_{ld.load}_p_mw"]
@@ -60,8 +61,8 @@ def main():
         s = np.hypot(p_mw, q_mvar)
         rows.append({
             "load": ld.load, "bus": ld.bus,
-            "p_mw": p_mw + np.random.normal(0, s * sm_pq_std),
-            "q_mvar": q_mvar + np.random.normal(0, s * sm_pq_std),
+            "p_mw": p_mw + np.random.normal(0, s * sm_p_std),
+            "q_mvar": q_mvar + np.random.normal(0, s * sm_q_std),
             "vm_pu": vm_pu + np.random.normal(0, vm_pu * sm_vm_std),
         })
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
