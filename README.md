@@ -1,129 +1,58 @@
-# Synthesized Swiss Distribution Grids — Shareable Dataset
-
-## What this is
+# Synthetic Swiss Distribution Grids
 
 35 synthetic Swiss MV/LV distribution grids with real load data and power-flow-derived ground
-truth, built to compare two impedance/topology estimation methods (SUPSI's catalogue-prior method
-and a regularization-based method) against known ground truth. Each grid has real topology, real
-consumption data assigned to its loads, a full 4-week/15-minute power-flow simulation, a
-configurable measurement noise model, and PMU-penetration scenarios.
+truth, for testing impedance/topology estimation methods against known ground truth.
 
-## Sources
+## How this data was generated
 
-- **Topology**: ETH Zurich's "Swiss-PDGs" dataset — synthetic MV/LV grids with real OSM-embedded
-  geometry (bus/line coordinates), pandapower-native, cables assigned from the pandapower standard
-  line-type catalogue.
-- **Load profiles**: ETH Zurich's real residential smart-meter dataset ("Dataset on residential
-  electricity load profiles in Switzerland", Zenodo, CC-BY-4.0) — 2,447 installations, 15-minute
-  resolution, 2023-2024. Real meters are assigned to synthetic loads (multiple meters aggregated
-  per load for MV-level loads) to produce plausible time-varying consumption.
+- **Topology**: ETH Zurich's "Swiss-PDGs" dataset (real OSM-embedded geometry, pandapower-native).
+- **Load profiles**: real Swiss residential smart-meter data (ETH Zurich / EKZ, Zenodo,
+  2,447 installations, 15-min resolution, 2023-2024), assigned to every synthetic load.
+- **Ground truth**: a full 4-week/15-minute pandapower power-flow simulation per grid, plus a
+  configurable measurement noise model (0-5%) and PMU-penetration scenarios (0-30% of buses).
 
-## Approach
+No topology or load shape is hand-designed — everything comes from real datasets or real
+power-flow simulation. This folder is self-contained: its webpage code is only ever edited here,
+and its `data/` is fetched via `make download-data` from a Google Drive archive built by the main
+`synthetic-grids-claude-agents` project's `make shared-data-archive` (the same archive
+`impedance-estimation/` uses — see that project's README for why).
 
-Real Swiss-PDGs topology + real ETH meter data assigned to every load + a full 4-week/15-minute
-pandapower power flow run per grid (the ground truth) + a configurable Gaussian noise model
-(0-5%, smart-meter and PMU) + PMU-penetration scenarios (0-30% of buses, nested/cumulative,
-including the feeder-root bus). No topology is hand-designed or hard-coded — grids, cables, and
-load time series all come from real datasets or real power-flow simulation.
+## How to use it
+
+```
+make setup           # create .venv, install requirements
+make download-data    # fetch data/ (~1.3G) from Google Drive
+make webpage          # http://localhost:8811
+```
+
+Or load data directly in Python — see `load_example.py` for a short, server-free script showing
+how to read one grid's ground truth, PMU set, load profiles, and apply the noise model. To get a
+concrete, noisy scenario's smart-meter + PMU readings as CSV files, use `get_scenario_data.py`:
+
+```
+python get_scenario_data.py --grid LV__Alps-Periurban__5238-11_1_3_grid \
+  --timestamp 2024-03-10T08:00:00 --noise 2% --pmu-penetration 10% --out-dir out/
+```
 
 ## What's in `data/`
 
-- **`organized/<voltage_level>/<category>/<grid_name>/`** — one folder per grid (35 total):
-  topology (`buses.csv`, `lines.csv`, `trafos.csv`, `ext_grid.csv`, `loads.csv`,
-  `bus_geodata.csv`, `line_geodata.csv`), PMU-penetration bus assignments
-  (`pmu_penetration_selection.csv`), and provenance of which real ETH meters were assigned to
-  which synthetic load (`eth_load_assignment.csv`, `eth_load_meter_contributions.csv`).
-  `organized/index.csv` lists all 35 grids with summary stats.
-- **`ground-truth-full/<grid_id>/`** — the full 4-week/15-minute pandapower power-flow results
-  (`bus.parquet`, `line.parquet`, `trafo.parquet`): voltages, angles, line loadings/currents, for
-  every timestamp. This is the actual ground truth the webpage and any estimation method compare
-  against.
-- **`load-profiles/<voltage_level>/[<category>/]<grid_name>.csv`** — the real 4-week/15-minute
-  ETH-derived p_mw/q_mvar time series for every load in each grid (input to the power flow above).
-- **`noise-model-config.csv`** — the 6 noise levels (0-5%) x device (`smart_meter`/`pmu`) x
-  quantity reference table used to add measurement noise on top of the clean ground truth.
+Plain CSV/Parquet only — no pandapower or any other special package needed to read any of it.
 
-See `load_example.py` for the actual column shapes and how the files link together — it's a
-better reference than a written data dictionary.
+- `grid_topology/<voltage_level>/<category>/<grid_name>/` — per-grid topology and geodata
+  (`buses.csv`, `lines.csv`, `trafos.csv`, `ext_grid.csv`, `loads.csv`, `bus_geodata.csv`,
+  `line_geodata.csv`) and PMU-penetration bus assignments (`pmu_penetration_selection.csv`).
+  `grid_topology/index.csv` lists all 35 grids.
+- `power_flow_results/<grid_id>/` — full 4-week/15-min power-flow results (voltages, angles, line
+  loadings/currents) — the actual ground truth, as Parquet.
+- `load_power/<voltage_level>/[<category>/]<grid_name>.csv` — the real ETH-derived p_mw/q_mvar
+  time series per load (power-flow input).
+- `noise-model-config.csv` — the 6 noise levels x device x quantity reference table.
+- `pandapower_line_std_types.csv` — the cable catalogue (not used by the webpage itself, carried
+  for `impedance-estimation/`'s use, which reads the same archive).
 
-**Note**: within the main `synthesized-grids` project, everything under `data/` here (plus
-`webpage/static/`) is a symlink into the main project's own `data/`/`code/webpage/static/`, so
-there's never a second physical copy of the same bytes on disk. This is transparent to everything
-above — reads work exactly the same either way. It only matters if you're handing `share/` off on
-its own (e.g. to SUPSI, or uploading to Zenodo): see "Exporting a standalone copy" below, since
-symlinks don't survive being copied out of the main project's directory tree as-is.
+## The webpage
 
-## Running the webpage
-
-```
-pip install -r requirements.txt
-./run_server.sh
-```
-
-Then open `http://localhost:8811/` in a browser.
-
-## How the webpage works
-
-Three columns:
-
-- **Left**: pick one of the 35 grids (grouped by voltage level/category, with a text filter), and
-  below it, "Map layers" — six independent on/off toggles, all on by default:
-  - **Voltage colors** — bus fill colored by `vm_pu` at the current timestamp, diverging
-    blue-green-red, default range 0.95-1.05 pu.
-  - **Line loading / current colors** — line stroke colored by `loading_percent`, same diverging
-    scheme, default range 0-100%.
-  - **Load-flow arrows** — small arrows along each line, pointing from the feeder root toward the
-    leaves (direction is fixed by the grid's radial topology — none of these grids have local
-    generation, so power only ever flows outward), sized by that line's loading.
-  - **Node type** — a colored ring around each bus (red = feeder root, orange = transformer, blue =
-    regular) plus a size bump for non-regular buses.
-  - **PMU bus markers** — purple diamonds at whichever buses carry a PMU under the selected
-    penetration level.
-  - **PV / prosumer loads** — amber stars at loads whose real ETH profile goes net-negative
-    (exports power) at some point in the 4-week window — a genuine, if small, subset of the real
-    consumption data, not a modeled generator. Sized by how often that load exports; hover for the
-    exact export frequency and peak export magnitude. This layer doesn't change with the time
-    slider — it's a whole-window summary, not a per-moment reading.
-
-  For the two color layers, the little colorbar under the checkboxes has draggable handles — drag
-  to narrow the highlighted value range (can't be widened past the 0.95-1.05 / 0-100% defaults).
-  There's also a "Marker / line size" slider if the default sizes are hard to read on a given grid.
-
-- **Middle**: a time slider over the full 4-week/15-minute window (2,688 steps), and the map itself
-  — a real OpenStreetMap basemap (so cable routing shows in its actual geographic context — real
-  street/village layout, not just abstract coordinates) with the grid drawn on top. Scroll to zoom,
-  drag to pan, double-click to reset to the grid's own extent. The bottom edge of the map box is a
-  drag handle if you want it taller.
-
-- **Right**: "Scenario" — a noise level (0-5%, applied client-side, same value always reappears for
-  the same grid/quantity/timestamp/level if you revisit it) and a PMU-penetration level (0-30% of
-  buses, nested/cumulative, always including the feeder-root bus) — plus two tables: per-load
-  smart-meter readings (magnitude only, matching a real sensor's constraint) and per-PMU readings
-  (magnitude + phase) at the current timestamp/noise/penetration combination.
-
-All three columns can be resized by dragging the thin bars between them.
-
-The map reads live from `data/ground-truth-full/` and `data/organized/` (topology, PMU sets, the
-prosumer-load flags) on every timestamp/grid change; the noise model reads `data/noise-model-config.csv`
-and is computed in the browser, not precomputed.
-
-## Loading data directly in Python
-
-See `load_example.py` — a short, flat script (no server needed) showing how to read a specific
-grid's ground truth at a specific timestamp, its PMU set at a specific penetration level, apply
-the noise model, and read its load profiles, directly from the files under `data/`.
-
-## Exporting a standalone copy
-
-`share/`'s `data/` and `webpage/static/` are symlinks into the main `synthesized-grids` project
-(see the note above) — fine for working inside that project, but symlinks are broken/meaningless
-once `share/` is copied out on its own (e.g. to send to SUPSI, or to upload to Zenodo). To produce
-a real, self-contained archive with the symlinks dereferenced into actual files:
-
-```
-make share-export
-```
-
-run from the main project's root (this is a Makefile target there, not inside `share/` itself). It
-writes `share-export.tar.gz` to the project root — a tar archive with every symlink replaced by the
-real file/directory it points to, safe to extract and hand off anywhere.
+Pick a grid (left), scrub the time slider (middle, over the full 4-week window, real OSM basemap),
+toggle map layers (voltage, line loading, load-flow arrows, node type, PMU markers, PV/prosumer
+loads — draggable colorbar ranges), and set a noise level / PMU-penetration scenario (right) to see
+the resulting smart-meter and PMU measurement tables.

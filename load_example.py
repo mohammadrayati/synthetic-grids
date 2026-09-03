@@ -1,5 +1,5 @@
 """Minimal example: load ground-truth, PMU-penetration and load-profile data for one
-grid/timestamp/noise-level/PMU-penetration combination, directly from share/data/, no server."""
+grid/timestamp/noise-level/PMU-penetration combination, directly from data/, no server."""
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -13,8 +13,8 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 target_ts = pd.Timestamp(TIMESTAMP)
 
 # --- ground-truth power flow: bus voltages and line loadings at the nearest timestamp ---
-bus_df = pd.read_parquet(DATA_DIR / "ground-truth-full" / GRID_ID / "bus.parquet")
-line_df = pd.read_parquet(DATA_DIR / "ground-truth-full" / GRID_ID / "line.parquet")
+bus_df = pd.read_parquet(DATA_DIR / "power_flow_results" / GRID_ID / "bus.parquet")
+line_df = pd.read_parquet(DATA_DIR / "power_flow_results" / GRID_ID / "line.parquet")
 
 unique_ts = bus_df["timestamp_utc"].unique()
 nearest_ts = unique_ts[np.argmin(np.abs(unique_ts - np.datetime64(target_ts)))]
@@ -28,7 +28,7 @@ print("\nLine loadings (%), first 5 lines:")
 print(line_snap[["line", "loading_percent"]].head())
 
 # --- PMU-penetration selection: which buses carry a PMU at this level ---
-grid_folder = DATA_DIR / "organized" / Path(*GRID_ID.split("__"))
+grid_folder = DATA_DIR / "grid_topology" / Path(*GRID_ID.split("__"))
 pmu_sel = pd.read_csv(grid_folder / "pmu_penetration_selection.csv")
 pmu_at_level = pmu_sel[pmu_sel["penetration_level"] == PMU_PENETRATION]
 print(f"\nPMUs at {PMU_PENETRATION} penetration: {sorted(pmu_at_level['bus'].tolist())}")
@@ -46,7 +46,7 @@ print(pd.DataFrame({"bus": bus_snap["bus"].to_numpy()[:5],
                      "noisy_vm_pu": noisy_vm_pu[:5]}))
 
 # --- load profiles: real ETH-derived p_mw/q_mvar at the nearest timestamp ---
-lp_path = DATA_DIR / "load-profiles" / Path(*GRID_ID.split("__")).with_suffix(".csv")
+lp_path = DATA_DIR / "load_power" / Path(*GRID_ID.split("__")).with_suffix(".csv")
 lp_df = pd.read_csv(lp_path)
 lp_df["timestamp_utc"] = pd.to_datetime(lp_df["timestamp_utc"], utc=True).dt.tz_localize(None)
 lp_unique_ts = lp_df["timestamp_utc"].unique()

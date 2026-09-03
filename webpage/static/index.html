@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Synthesized Grids — Data Viewer</title>
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Synthesized Grids — Data Viewer</h1>
+</header>
+
+<div id="layout">
+
+  <!-- LEFT: grid selector + topology layer controls -->
+  <div class="panel" id="panel-grids">
+    <h2>Select a grid</h2>
+    <input type="text" id="grid-search" placeholder="filter by name / category…">
+    <div id="grid-list"></div>
+    <div id="grid-summary" class="grid-summary" style="margin-top:10px;"></div>
+
+    <h2 style="margin-top:12px;">Map layers</h2>
+    <div id="map-controls">
+      <div class="layer-toggles">
+        <label class="layer-toggle"><input type="checkbox" id="layer-voltage" checked> Voltage colors (bus fill)</label>
+        <label class="layer-toggle"><input type="checkbox" id="layer-loading" checked> Line loading / current colors (line stroke)</label>
+        <label class="layer-toggle">
+          <input type="checkbox" id="layer-flow" checked>
+          <span class="layer-toggle-text">Load-flow arrows</span>
+          <svg class="flow-swatch" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+            <polygon points="0,0 10,5 0,10" fill="#2b3542"></polygon>
+          </svg>
+        </label>
+        <label class="layer-toggle">
+          <input type="checkbox" id="layer-nodetype" checked>
+          <span class="layer-toggle-text">Node type (bus role)</span>
+          <span class="layer-swatches">
+            <span class="swatch-item"><span class="swatch" style="background:var(--ext-grid)"></span>feeder root / ext-grid</span>
+            <span class="swatch-item"><span class="swatch" style="background:var(--trafo)"></span>transformer</span>
+            <span class="swatch-item"><span class="swatch" style="background:var(--regular)"></span>regular</span>
+          </span>
+        </label>
+        <label class="layer-toggle">
+          <input type="checkbox" id="layer-pmu" checked>
+          <span class="layer-toggle-text">PMU bus markers</span>
+          <span class="layer-swatches">
+            <span class="swatch-item"><span class="swatch pmu-swatch" style="background:var(--pmu)"></span>current penetration level</span>
+          </span>
+        </label>
+        <label class="layer-toggle">
+          <input type="checkbox" id="layer-prosumer" checked>
+          <span class="layer-toggle-text">PV / prosumer loads</span>
+          <svg class="pv-swatch" width="11" height="11" viewBox="0 0 24 24" aria-hidden="true">
+            <polygon points="12,1 15,9 23,9 16.5,14 19,22 12,17 5,22 7.5,14 1,9 9,9"
+              fill="var(--pv)" stroke="#fff" stroke-width="0.8"></polygon>
+          </svg>
+        </label>
+      </div>
+      <div id="colorbar" class="colorbar"></div>
+      <div class="size-control">
+        <label for="size-slider">Marker / line size</label>
+        <div class="size-control-row">
+          <input type="range" id="size-slider" min="0.3" max="4" step="0.1" value="1">
+          <span id="size-slider-label">1.0×</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-resize-handle" id="col-resize-1" title="Drag to resize columns"></div>
+
+  <!-- MIDDLE: time bar + topology map -->
+  <div class="panel" id="panel-topology">
+    <h2>Time</h2>
+    <div id="time-bar">
+      <div id="time-display"></div>
+      <input type="range" id="time-slider" min="0" max="2687" value="0" step="1">
+      <div id="time-range-labels">
+        <span id="time-start-label"></span>
+        <span id="time-end-label"></span>
+      </div>
+    </div>
+
+    <h2 style="margin-top:12px;">Topology</h2>
+    <div id="svg-wrap">
+      <div id="tooltip"></div>
+      <div id="loading-overlay">Loading…</div>
+    </div>
+    <div id="map-resize-handle" title="Drag to resize the map"></div>
+  </div>
+
+  <div class="col-resize-handle" id="col-resize-2" title="Drag to resize columns"></div>
+
+  <!-- RIGHT: scenario controls + measurement tables -->
+  <div class="panel" id="panel-scenario">
+    <h2>Scenario</h2>
+    <label for="noise-select">Noise level (applied client-side)</label>
+    <select id="noise-select">
+      <option value="0%" selected>0%</option>
+      <option value="1%">1%</option>
+      <option value="2%">2%</option>
+      <option value="3%">3%</option>
+      <option value="4%">4%</option>
+      <option value="5%">5%</option>
+    </select>
+
+    <label for="pmu-select">PMU penetration level</label>
+    <select id="pmu-select">
+      <option value="0%" selected>0% (none)</option>
+      <option value="5%">5%</option>
+      <option value="10%">10%</option>
+      <option value="15%">15%</option>
+      <option value="20%">20%</option>
+      <option value="25%">25%</option>
+      <option value="30%">30%</option>
+    </select>
+
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="smart-meter">Smart meters (table)</button>
+      <button class="tab-btn" data-tab="pmu">PMU measurements (table)</button>
+    </div>
+
+    <div id="tab-smart-meter" class="tab-panel active">
+      <div id="smart-meter-note" class="small-note"></div>
+      <div class="scroll-table">
+        <table class="data-table" id="smart-meter-table">
+          <thead><tr><th>load</th><th>bus</th><th>vm_pu</th><th>p_mw</th><th>q_mvar</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="tab-pmu" class="tab-panel">
+      <div id="pmu-table-note" class="small-note"></div>
+      <div class="scroll-table">
+        <table class="data-table" id="pmu-table">
+          <thead><tr><th>bus</th><th>vm_pu</th><th>va_degree</th><th>role</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

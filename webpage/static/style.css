@@ -1,0 +1,525 @@
+:root {
+  --bg: #f7f8fa;
+  --panel: #ffffff;
+  --border: #dde1e6;
+  --text: #1c2530;
+  --muted: #6b7480;
+  --accent: #2563eb;
+  --ext-grid: #d64545;
+  --trafo: #e29a1f;
+  --regular: #4b6fa8;
+  --measured: #1f9e5c;
+  --unmeasured: #b8bec7;
+  --pmu: #8a2be2;
+  --pv: #f5a623;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+
+header {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 18px;
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+header h1 {
+  font-size: 17px;
+  margin: 0;
+  font-weight: 600;
+}
+
+header .subtitle {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+html, body {
+  height: 100%;
+}
+
+#layout {
+  display: grid;
+  /* col1 (grid list + map-layer controls) | drag handle | col2 (time + map, the "large" column,
+     absorbs whatever space cols 1/3 don't use) | drag handle | col3 (scenario + tables) */
+  grid-template-columns: 340px 6px 1fr 6px 460px;
+  gap: 12px;
+  padding: 12px;
+  align-items: stretch;
+  height: calc(100vh - 66px); /* fills the viewport below the header */
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  overflow-y: auto; /* fallback so a panel scrolls itself rather than breaking the row height */
+}
+
+/* Scenario panel (right column): its own controls stay natural height, the active
+   measurement table is stretched to fill whatever vertical space remains.
+   Redo 8: selector changed from :nth-child(3) to :last-child - the two new
+   .col-resize-handle divs are now interleaved between the .panel elements as direct
+   children of #layout, so #panel-scenario is no longer the 3rd child overall (it's the
+   5th child / 3rd .panel), but it is still reliably the LAST child. */
+#layout > .panel:last-child {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+#layout > .panel:last-child .tab-panel.active {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.panel h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  margin: 0 0 8px 0;
+}
+
+label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin: 10px 0 3px 0;
+}
+
+select, input[type="text"] {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+  background: #fff;
+}
+
+#grid-list {
+  max-height: 460px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-top: 4px;
+}
+
+.grid-item {
+  padding: 6px 8px;
+  cursor: pointer;
+  border-bottom: 1px solid #eee;
+  font-size: 12.5px;
+}
+
+.grid-item:hover { background: #eef2fb; }
+.grid-item.active { background: var(--accent); color: white; }
+.grid-item .tag {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #e6e9ee;
+  color: #444;
+  margin-right: 4px;
+}
+.grid-item.active .tag { background: rgba(255,255,255,0.25); color: white; }
+
+.group-header {
+  padding: 5px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  background: #f2f3f5;
+  position: sticky;
+  top: 0;
+}
+
+#svg-wrap {
+  border: 1px solid var(--border);
+  border-radius: 4px 4px 0 0;
+  background: #fcfcfd;
+  position: relative;
+  overflow: hidden;
+  height: 420px;
+  /* Redo 8: very subtle lift/depth cue under the map box, not a heavy dark shadow. */
+  box-shadow: 0 6px 14px rgba(20, 24, 30, 0.10);
+}
+
+/* Redo 9: #svg-wrap is now the Leaflet map's own container (L.map('svg-wrap', ...)); Leaflet
+   manages its own internal DOM/CSS (tiles, panes, zoom control, grab/grabbing cursor via its
+   .leaflet-container / .leaflet-grab classes) under this div. Only #tooltip and #loading-overlay
+   (both pre-existing plain divs, unrelated to Leaflet) still need explicit rules here - see below
+   for their z-index, which must clear Leaflet's own pane/control z-indices (up to ~1000). */
+
+/* divIcon reset for our custom flow-arrow/PMU markers (Redo 9): Leaflet's default DivIcon
+   className ('leaflet-div-icon') draws a white box with a border, which we don't want since our
+   own inline SVG already draws the full glyph (triangle/diamond). */
+.grid-divicon {
+  background: transparent !important;
+  border: none !important;
+}
+
+#map-resize-handle {
+  height: 10px;
+  margin-top: -1px;
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 4px 4px;
+  background: #eef0f3;
+  cursor: ns-resize;
+  position: relative;
+}
+#map-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 28px;
+  height: 3px;
+  transform: translate(-50%, -50%);
+  border-radius: 2px;
+  background: #b8bec8;
+}
+#map-resize-handle:hover {
+  background: #dde1e8;
+}
+#map-resize-handle:hover::after {
+  background: #97a0ac;
+}
+
+/* Redo 8: vertical drag handles between the three #layout columns, letting the user
+   reallocate horizontal space (setupColumnResize() in app.js). Same visual language as
+   #map-resize-handle above (subtle bar, grip mark, darkens on hover), just rotated 90°. */
+.col-resize-handle {
+  width: 6px;
+  border-radius: 3px;
+  background: #eef0f3;
+  cursor: col-resize;
+  position: relative;
+  align-self: stretch;
+}
+.col-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 28px;
+  transform: translate(-50%, -50%);
+  border-radius: 2px;
+  background: #b8bec8;
+}
+.col-resize-handle:hover {
+  background: #dde1e8;
+}
+.col-resize-handle:hover::after {
+  background: #97a0ac;
+}
+
+#tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: rgba(20, 24, 30, 0.92);
+  color: #fff;
+  padding: 6px 9px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  max-width: 280px;
+  display: none;
+  /* Redo 9: must clear Leaflet's own pane/control z-indices (tile pane 200, marker pane 600,
+     controls ~1000) now that #svg-wrap is the Leaflet map container, not a bare SVG. */
+  z-index: 2000;
+  white-space: pre-line;
+}
+
+/* Redo 6: layer-toggle rows double as the legend — each row's swatch(es) show what that layer
+   looks like, so there is one list (toggle + legend combined) instead of two separate blocks. */
+.swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.pmu-swatch {
+  border-radius: 0;
+  transform: rotate(45deg);
+}
+.flow-swatch {
+  vertical-align: middle;
+  margin-left: 2px;
+}
+.pv-swatch {
+  vertical-align: middle;
+  margin-left: 2px;
+}
+.layer-swatches {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-left: 20px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.swatch-item {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Redo 5: control block grouping layer toggles + colorbar + legend + size slider, sitting above
+   the map (previously the layer toggles lived in the right panel and the colorbar floated over
+   the map itself). */
+#map-controls {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #fbfbfc;
+  padding: 10px 12px 12px 12px;
+  margin-bottom: 10px;
+}
+
+.size-control {
+  margin-top: 10px;
+}
+.size-control-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.size-control-row input[type="range"] {
+  flex: 1 1 auto;
+}
+.size-control-row span {
+  font-size: 12px;
+  color: var(--text);
+  min-width: 34px;
+  text-align: right;
+}
+
+.layer-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+.layer-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text);
+  margin: 0;
+  cursor: pointer;
+}
+.layer-toggle input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  cursor: pointer;
+}
+
+#time-bar {
+  padding: 6px 4px 10px 4px;
+}
+#time-display {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+#time-slider {
+  width: 100%;
+}
+#time-range-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+/* Redo 5: no longer a floating overlay on the map (was position:absolute over #svg-wrap) - now a
+   normal-flow row of widgets inside #map-controls, above the map. */
+.colorbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.colorbar-widget {
+  width: 180px;
+  flex: 0 0 auto;
+  background: rgba(255,255,255,0.95);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px 6px 10px;
+  font-size: 11px;
+}
+.colorbar-widget.dragging {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.cb-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 16px; /* room for the handle labels above the track */
+}
+.cb-title {
+  font-weight: 600;
+  color: var(--text);
+}
+.cb-reset {
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: 10.5px;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+.cb-reset:hover { color: #1d4ed8; }
+
+.cb-track {
+  position: relative;
+  height: 12px;
+  border-radius: 2px;
+  margin: 2px 0 4px 0;
+  /* background (the grey/gradient window) is set inline per-frame by buildColorbarWidget() */
+}
+
+.cb-handle {
+  position: absolute;
+  top: -3px;
+  width: 6px;
+  height: 18px;
+  margin-left: -3px;
+  background: var(--text);
+  border: 1px solid #fff;
+  border-radius: 2px;
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 2;
+}
+.cb-handle:hover, .colorbar-widget.dragging .cb-handle { background: var(--accent); }
+
+.cb-handle-label {
+  position: absolute;
+  top: -16px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text);
+  background: rgba(255,255,255,0.9);
+  padding: 0 2px;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.cb-domain-labels {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.grid-summary {
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.grid-summary b { color: var(--text); }
+
+table.data-table {
+  width: 100%;
+  min-width: 620px; /* keeps columns from crushing together; horizontal scroll picks up the rest */
+  border-collapse: collapse;
+  font-size: 12.5px;
+  margin-top: 6px;
+}
+table.data-table th, table.data-table td {
+  border-bottom: 1px solid #eee;
+  padding: 5px 8px;
+  text-align: right;
+  white-space: nowrap; /* keep columns aligned; scroll horizontally instead of wrapping */
+}
+table.data-table th:first-child, table.data-table td:first-child { text-align: left; }
+table.data-table th {
+  color: var(--muted);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
+}
+.scroll-table {
+  flex: 1 1 auto;
+  min-height: 220px; /* sensible floor when the panel itself is short */
+  overflow: auto; /* both axes: vertical for rows, horizontal for the wide table */
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.tab-btn {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  background: #f2f3f5;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.tab-btn.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+.badge-selected { color: var(--measured); font-weight: 600; }
+.badge-unselected { color: var(--unmeasured); }
+
+.small-note {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 6px;
+  line-height: 1.4;
+}
+
+#loading-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(255,255,255,0.7);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: var(--muted);
+  /* Redo 9: must sit above Leaflet's own panes/controls, same reasoning as #tooltip above. */
+  z-index: 1900;
+}
