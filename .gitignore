@@ -1,0 +1,9 @@
+*.pyc
+**/__pycache__/
+.DS_Store
+
+# Local, symlinked/build-artifact data — like a .cache folder, not tracked in this repo's history.
+# data/ is a tree of symlinks into the main project's data/ (see code/export/sync_share.py there).
+# webpage/data/ is a regenerated build artifact (webpage/build_data.py).
+data/
+webpage/data/
