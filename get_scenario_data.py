@@ -82,7 +82,8 @@ def main():
             "va_degree": va_degree + np.random.normal(0, pmu_va_std),
             "is_feeder_root": bool(r.is_feeder_root),
         })
-    pd.DataFrame(prows).to_csv(Path(args.out_dir) / "pmu.csv", index=False)
+    pmu_columns = ["bus", "vm_pu", "va_degree", "is_feeder_root"]
+    pd.DataFrame(prows, columns=pmu_columns).to_csv(Path(args.out_dir) / "pmu.csv", index=False)
 
     print(f"Wrote smart_meter.csv ({len(rows)} loads) and pmu.csv ({len(prows)} PMUs) to {args.out_dir}")
 
