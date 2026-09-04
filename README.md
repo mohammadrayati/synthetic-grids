@@ -25,13 +25,12 @@ make download-data    # fetch data/ (~1.3G) from Google Drive
 make webpage          # http://localhost:8811
 ```
 
-Or load data directly in Python — see `load_example.py` for a short, server-free script showing
-how to read one grid's ground truth, PMU set, load profiles, and apply the noise model. To get a
-concrete, noisy scenario's smart-meter + PMU readings as CSV files, use `get_scenario_data.py`:
+Or get a concrete, noisy scenario's smart-meter + PMU readings (full 4-week time series) as CSV
+files, server-free, with `get_scenario_data.py`:
 
 ```
 python get_scenario_data.py --grid LV__Alps-Periurban__5238-11_1_3_grid \
-  --timestamp 2024-03-10T08:00:00 --noise 2% --pmu-penetration 10% --out-dir out/
+  --noise 2% --pmu-penetration 10% --out-dir out/
 ```
 
 ## What's in `data/`
