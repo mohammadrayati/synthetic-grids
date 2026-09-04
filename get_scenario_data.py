@@ -29,7 +29,7 @@ def main():
     p.add_argument("--grid", required=True)
     p.add_argument("--noise", required=True, help="e.g. 2%%")
     p.add_argument("--pmu-penetration", required=True, help="e.g. 10%%")
-    p.add_argument("--out-dir", default=".")
+    p.add_argument("--out-dir", default="data")
     args = p.parse_args()
 
     gdir = grid_dir(args.grid)
