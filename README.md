@@ -33,6 +33,16 @@ python get_scenario_data.py --grid LV__Alps-Periurban__5238-11_1_3_grid \
   --noise 2% --pmu-penetration 10% --out-dir out/
 ```
 
+`--grid` is a grid's `data/grid_topology/index.csv` `folder` column with `/` replaced by `__`
+(e.g. `LV/Alps-Periurban/5238-11_1_3_grid` -> `LV__Alps-Periurban__5238-11_1_3_grid`) — see that
+CSV for the full list of 35. One example per voltage level:
+
+| voltage level | `--grid` |
+| --- | --- |
+| LV  | `LV__Alps-Periurban__5238-11_1_3_grid` |
+| MV  | `MV__153_0_grid` |
+| MV_LV | `MV_LV__ML_0_0_grid` |
+
 ## What's in `data/`
 
 Plain CSV/Parquet only — no pandapower or any other special package needed to read any of it.
