@@ -74,11 +74,12 @@ def main() -> None:
         print("Already populated (found all marker paths) - skipping download. Pass --force to redo.")
         return
 
-    dest.mkdir(parents=True, exist_ok=True)
+    data_dir = dest / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
     archive_path = dest / "data-archive-download.tar.gz"
 
     download_archive(extract_file_id(args.file_id), archive_path)
-    extract_archive(archive_path, dest)
+    extract_archive(archive_path, data_dir)
 
     if not already_populated(dest, markers):
         sys.exit("Extraction finished but expected marker paths are still missing - check the archive.")
