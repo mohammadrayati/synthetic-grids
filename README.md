@@ -3,13 +3,26 @@
 35 synthetic Swiss MV/LV distribution grids with real load data and power-flow-derived ground
 truth, for testing impedance/topology estimation methods against known ground truth.
 
-## How this data was generated
+## Where the data comes from
 
-- **Topology**: ETH Zurich's "Swiss-PDGs" dataset (real OSM-embedded geometry, pandapower-native).
-- **Load profiles**: real Swiss residential smart-meter data (ETH Zurich / EKZ, Zenodo,
-  2,447 installations, 15-min resolution, 2023-2024), assigned to every synthetic load.
-- **Ground truth**: a full 4-week/15-minute pandapower power-flow simulation per grid, plus a
-  configurable measurement noise model (0-5%) and PMU-penetration scenarios (0-30% of buses).
+1. **Topology** — ETH Zurich "Swiss-PDGs" database.
+   - Code/data: https://github.com/aeonetos/Swiss-PDGs
+   - Info page: https://rre.ethz.ch/research/models-and-data/Swiss-PDGs-Database.html
+   - 879 MV grids + 34,920 LV grids, all Switzerland. Built from real OpenStreetMap data, not
+     hand-made.
+   - We selected 35 grids from it (see `grid_topology/index.csv`).
+
+2. **Load profiles** — ETH Zurich / EKZ smart-meter dataset.
+   - Link: https://doi.org/10.5281/zenodo.21398768
+   - Name: "Dataset on residential electricity load profiles in Switzerland".
+   - 2,447 real meters, 15-min resolution, 2023-2024.
+   - We assigned these real profiles to the loads of each of the 35 selected grids.
+
+3. **Ground truth (power flow)** — computed by us, not downloaded.
+   - Real AC power flow (pandapower), full 4 weeks, every 15 min, for each grid.
+   - Gives voltage, current, and loading for the whole grid at every timestamp.
+   - Noise (0-5%) and PMU-penetration (0-30%) are added on top, for testing measurement setups
+     only — the ground truth itself is clean.
 
 No topology or load shape is hand-designed — everything comes from real datasets or real
 power-flow simulation. This folder is self-contained: its webpage code is only ever edited here,
