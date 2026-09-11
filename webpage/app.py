@@ -24,10 +24,14 @@ Endpoints:
                                                         line: {line_id: loading_percent, ...}}
   GET /api/<grid_id>/smart_meter?timestamp=<iso8601> -> [{load, bus, p_mw, q_mvar, vm_pu}, ...]
   GET /api/<grid_id>/pmu_readings?timestamp=<iso8601>&penetration=<level>
-                                                      -> {pmus: [{bus, vm_pu, va_degree,
-                                                        is_feeder_root}, ...]} for every bus
-                                                        selected at that PMU-penetration level;
-                                                        empty list at 0%.
+                                                      -> {pmus: [{bus, vm_pu, va_degree, p_mw,
+                                                        q_mvar, is_feeder_root}, ...]} for every
+                                                        bus selected at that PMU-penetration level;
+                                                        empty list at 0%. p_mw/q_mvar are the net
+                                                        injection of the bus's own attached loads
+                                                        (0 for a bus with none) - see
+                                                        net_injection_at_bus()'s docstring for why
+                                                        this is used instead of branch power flow.
 
 <grid_id> is index.csv's `folder` column with the `data/grid_topology/` prefix stripped and `/`
 replaced by `__`, e.g. 'data/grid_topology/LV/Alps-Periurban/5238-11_1_3_grid' <->
@@ -363,6 +367,36 @@ def get_loads_meta(grid_id: str) -> pd.DataFrame:
     return pd.read_csv(path)[["load", "bus"]]
 
 
+@functools.lru_cache(maxsize=GRID_CACHE_SIZE)
+def get_bus_loads_map(grid_id: str) -> dict:
+    """bus_id -> list of load ids attached to that bus. Used to derive a PMU's net active/reactive
+    power injection (sum of its bus's loads' p_mw/q_mvar) - a real PMU measures line/branch power
+    flow, but no branch P/Q is stored anywhere in data/output/ (only vm_pu/va_degree for bus,
+    i_ka/loading_percent for line), and adding it would require re-running power flow for every
+    grid. Net load injection reuses data already computed for the smart-meter table and is exact
+    for any bus with loads attached; a bus with none attached (a pass-through pole) correctly
+    reports zero net injection - it does not carry current in isolation, only as part of a branch
+    flow, which this approximation does not attempt to reconstruct."""
+    loads_meta = get_loads_meta(grid_id)
+    out: dict = {}
+    for load_id, bus_id in zip(loads_meta["load"], loads_meta["bus"]):
+        out.setdefault(int(bus_id), []).append(int(load_id))
+    return out
+
+
+def net_injection_at_bus(row: pd.Series, bus_id: int, bus_loads: dict) -> tuple:
+    """Sum p_mw/q_mvar over every load attached to bus_id, reading columns off `row` (one row of
+    get_load_profile_df, i.e. load_<id>_p_mw / load_<id>_q_mvar). Returns (0.0, 0.0) for a bus with
+    no attached loads."""
+    p_total, q_total = 0.0, 0.0
+    for load_id in bus_loads.get(bus_id, []):
+        p_col, q_col = f"load_{load_id}_p_mw", f"load_{load_id}_q_mvar"
+        if p_col in row.index:
+            p_total += float(row[p_col])
+            q_total += float(row[q_col])
+    return p_total, q_total
+
+
 # ---------------------------------------------------------------------------
 # Timestamp parsing / snapping
 # ---------------------------------------------------------------------------
@@ -547,16 +581,27 @@ def api_pmu_readings(grid_id):
     rows = bus_rows[bus_rows["bus"].isin(wanted)]
     by_bus = {int(r.bus): (float(r.vm_pu), float(r.va_degree)) for r in rows.itertuples()}
 
+    bus_loads = get_bus_loads_map(grid_id)
+    lp_df = get_load_profile_df(grid_id)
+    lp_unique_ts = pd.Index(lp_df.index.unique()).sort_values()
+    lp_snapped = snap_timestamp(lp_unique_ts, ts)
+    lp_row = lp_df.loc[lp_snapped]
+    if isinstance(lp_row, pd.DataFrame):  # duplicate index safety net (shouldn't happen)
+        lp_row = lp_row.iloc[0]
+
     pmus = []
     for bus_id in bus_ids:
         vals = by_bus.get(int(bus_id))
         if vals is None:
             continue  # shouldn't happen (bus list comes from this grid's own topology), but don't crash
         vm_pu, va_degree = vals
+        p_mw, q_mvar = net_injection_at_bus(lp_row, int(bus_id), bus_loads)
         pmus.append({
             "bus": int(bus_id),
             "vm_pu": vm_pu,
             "va_degree": va_degree,
+            "p_mw": p_mw,
+            "q_mvar": q_mvar,
             "is_feeder_root": bus_id == feeder_root_bus,
         })
 

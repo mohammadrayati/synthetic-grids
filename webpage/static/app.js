@@ -17,6 +17,7 @@
 
 const state = {
   index: [],
+  region: null,           // currently selected "voltage_level|||category" region key
   gridId: null,
   meta: null,
   topology: null,
@@ -179,6 +180,26 @@ function noisySmartMeterPQ(p, q, loadId) {
   return [np, nq];
 }
 
+// PMU active/reactive power noise: reuses the pmu/far_p_mw + pmu/far_q_mvar noise-config entries
+// (Step 9's PMU noise model, relative_to_apparent_power basis - same std*sqrt(p^2+q^2) pattern as
+// noisySmartMeterPQ above). p/q here are the PMU bus's net load injection (see
+// net_injection_at_bus() on the backend), not literal branch flow, but it's the same physical
+// quantity class (active/reactive power at/near the PMU) so reusing this noise spec is the closest
+// available match rather than inventing a separate one.
+function noisyPmuPQ(p, q, busId) {
+  const cfgP = noiseCfg("pmu", "far_p_mw", state.noiseLevel);
+  const cfgQ = noiseCfg("pmu", "far_q_mvar", state.noiseLevel);
+  const s = Math.sqrt(p * p + q * q);
+  let np = p, nq = q;
+  if (cfgP && cfgP.std_value > 0) {
+    np = p + seededNormal(noiseKey("pmu_p_mw", "bus", busId)) * (cfgP.std_value * s);
+  }
+  if (cfgQ && cfgQ.std_value > 0) {
+    nq = q + seededNormal(noiseKey("pmu_q_mvar", "bus", busId)) * (cfgQ.std_value * s);
+  }
+  return [np, nq];
+}
+
 // ---------------------------------------------------------------------------
 // Diverging 3-stop color scales (Step 11 redesign point D)
 // ---------------------------------------------------------------------------
@@ -222,51 +243,80 @@ window.__colorScale3 = colorScale3;
 // Sidebar: grid list
 // ---------------------------------------------------------------------------
 
+function regionKey(g) {
+  return `${g.voltage_level}|||${g.category}`;
+}
+
+// Region list is derived once from the full index: one entry per distinct (voltage_level,
+// category) pair, e.g. "LV" x "Alps-Periurban" or "MV" x "MV". Picking a region first, then a
+// grid within it, keeps the grid list short even with thousands of grids (vs. one long flat/
+// grouped list of every grid at once).
+function buildRegions() {
+  const counts = {};
+  for (const g of state.index) {
+    const key = regionKey(g);
+    if (!counts[key]) counts[key] = { voltage_level: g.voltage_level, category: g.category, count: 0 };
+    counts[key].count += 1;
+  }
+  const voltageOrder = { LV: 0, MV: 1, MV_LV: 2 };
+  return Object.entries(counts)
+    .map(([key, info]) => ({ key, ...info }))
+    .sort((a, b) =>
+      (voltageOrder[a.voltage_level] - voltageOrder[b.voltage_level]) ||
+      a.category.localeCompare(b.category)
+    );
+}
+
+function populateRegionSelect() {
+  const regions = buildRegions();
+  const select = el("region-select");
+  select.innerHTML = "";
+  for (const r of regions) {
+    const opt = document.createElement("option");
+    opt.value = r.key;
+    opt.textContent = `${r.voltage_level} — ${r.category} (${r.count})`;
+    select.appendChild(opt);
+  }
+}
+
 async function loadIndex() {
   state.index = await fetchJSON(`/data/index.json`);
-  renderGridList(state.index);
-  el("grid-search").addEventListener("input", (e) => {
-    const q = e.target.value.trim().toLowerCase();
-    const filtered = state.index.filter((g) =>
-      g.grid_id.toLowerCase().includes(q) ||
-      g.category.toLowerCase().includes(q) ||
-      g.voltage_level.toLowerCase().includes(q)
-    );
-    renderGridList(filtered);
+  populateRegionSelect();
+  state.region = state.index.length ? regionKey(state.index[0]) : null;
+  el("region-select").value = state.region;
+  renderGridList(filteredIndex());
+
+  el("region-select").addEventListener("change", (e) => {
+    state.region = e.target.value;
+    el("grid-search").value = "";
+    renderGridList(filteredIndex());
+  });
+  el("grid-search").addEventListener("input", () => {
+    renderGridList(filteredIndex());
   });
 }
 
 function renderGridList(rows) {
-  const groups = {};
-  for (const g of rows) {
-    const key = `${g.voltage_level} — ${g.category}`;
-    (groups[key] = groups[key] || []).push(g);
-  }
   const container = el("grid-list");
   container.innerHTML = "";
-  const sortedKeys = Object.keys(groups).sort();
-  for (const key of sortedKeys) {
-    const header = document.createElement("div");
-    header.className = "group-header";
-    header.textContent = key;
-    container.appendChild(header);
-    for (const g of groups[key]) {
-      const item = document.createElement("div");
-      item.className = "grid-item" + (g.grid_id === state.gridId ? " active" : "");
-      item.innerHTML = `<span class="tag">${g.size_tier}</span>${g.grid_id.split("__").pop()}
-        <div style="color:#8a93a0;">${g.n_bus} bus · ${g.n_line} line · ${g.n_load} load</div>`;
-      item.addEventListener("click", () => selectGrid(g.grid_id));
-      container.appendChild(item);
-    }
+  for (const g of rows) {
+    const item = document.createElement("div");
+    item.className = "grid-item" + (g.grid_id === state.gridId ? " active" : "");
+    item.innerHTML = `<span class="tag">${g.size_tier}</span>${g.grid_id.split("__").pop()}
+      <div style="color:#8a93a0;">${g.n_bus} bus · ${g.n_line} line · ${g.n_load} load</div>`;
+    item.addEventListener("click", () => selectGrid(g.grid_id));
+    container.appendChild(item);
   }
 }
 
+// Grids in the currently selected region, further narrowed by the free-text search box.
 function filteredIndex() {
+  const inRegion = state.region
+    ? state.index.filter((g) => regionKey(g) === state.region)
+    : state.index;
   const q = el("grid-search").value.trim().toLowerCase();
-  if (!q) return state.index;
-  return state.index.filter((g) =>
-    g.grid_id.toLowerCase().includes(q) || g.category.toLowerCase().includes(q) || g.voltage_level.toLowerCase().includes(q)
-  );
+  if (!q) return inRegion;
+  return inRegion.filter((g) => g.grid_id.toLowerCase().includes(q));
 }
 
 // ---------------------------------------------------------------------------
@@ -1222,16 +1272,19 @@ function renderPmuTable(resp) {
   for (const r of rows) {
     const nvm = noisyPmuVm(r.vm_pu, r.bus);
     const nva = noisyPmuVa(r.va_degree, r.bus);
+    const [np, nq] = noisyPmuPQ(r.p_mw, r.q_mvar, r.bus);
     const tr = document.createElement("tr");
     tr.innerHTML = `<td>${r.bus}</td>
       <td>${nvm != null ? nvm.toFixed(5) : "n/a"}</td>
       <td>${nva != null ? nva.toFixed(4) : "n/a"}</td>
+      <td>${np.toExponential(3)}</td>
+      <td>${nq.toExponential(3)}</td>
       <td>${r.is_feeder_root ? "feeder-root" : "added"}</td>`;
     body.appendChild(tr);
   }
   note.textContent =
     `${rows.length} PMU(s) at ${resp.timestamp} · penetration: ${resp.penetration_level} · ` +
-    `noise level: ${state.noiseLevel} · magnitude + phase.`;
+    `noise level: ${state.noiseLevel} · magnitude + phase + net P/Q injection.`;
 }
 
 // ---------------------------------------------------------------------------

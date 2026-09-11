@@ -16,7 +16,9 @@
   <!-- LEFT: grid selector + topology layer controls -->
   <div class="panel" id="panel-grids">
     <h2>Select a grid</h2>
-    <input type="text" id="grid-search" placeholder="filter by name / category…">
+    <label for="region-select" class="small-note">Region</label>
+    <select id="region-select"></select>
+    <input type="text" id="grid-search" placeholder="filter grids in this region…">
     <div id="grid-list"></div>
     <div id="grid-summary" class="grid-summary" style="margin-top:10px;"></div>
 
@@ -135,7 +137,7 @@
       <div id="pmu-table-note" class="small-note"></div>
       <div class="scroll-table">
         <table class="data-table" id="pmu-table">
-          <thead><tr><th>bus</th><th>vm_pu</th><th>va_degree</th><th>role</th></tr></thead>
+          <thead><tr><th>bus</th><th>vm_pu</th><th>va_degree</th><th>p_mw</th><th>q_mvar</th><th>role</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
