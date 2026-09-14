@@ -12,7 +12,7 @@ PIP := $(VENV)/bin/pip
 
 # Google Drive file id of the shared data archive - SAME value as impedance-estimation/Makefile's
 # own DATA_ARCHIVE_GDRIVE_ID. Built by the main project's `make shared-data-archive`.
-DATA_ARCHIVE_GDRIVE_ID := https://drive.google.com/file/d/1VG-xzLtzPFdVaBX1qW09PuZuKx-stD-3/view?usp=sharing
+DATA_ARCHIVE_GDRIVE_ID := https://drive.google.com/file/d/1vYCvXLE0ijEgwz3PlNXt8wrIOQW0sC7v/view?usp=sharing
 
 .DEFAULT_GOAL := help
 
