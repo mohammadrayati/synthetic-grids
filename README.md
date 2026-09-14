@@ -1,6 +1,6 @@
 # Synthetic Swiss Distribution Grids
 
-35 synthetic Swiss MV/LV distribution grids with real load data and power-flow-derived ground truth, for testing impedance/topology estimation methods against known ground truth.
+~2000 synthetic Swiss MV/LV distribution grids with real load data and power-flow-derived ground truth, for testing impedance/topology estimation methods against known ground truth.
 
 ## Where the data comes from
 
@@ -8,7 +8,7 @@
    - Code/data: https://github.com/aeonetos/Swiss-PDGs
    - Info page: https://rre.ethz.ch/research/models-and-data/Swiss-PDGs-Database.html
    - 879 MV grids + 34,920 LV grids, all Switzerland. Built from real OpenStreetMap data, not hand-made.
-   - We selected 35 grids from it (see `grid_topology/index.csv`).
+   - We selected ~2000 grids from it (see `grid_topology/index.csv`).
 
 2. **Load profiles** — ETH Zurich / EKZ smart-meter dataset.
    - Link: https://doi.org/10.5281/zenodo.21398768
@@ -25,7 +25,7 @@
 
 ```
 make setup            # create .venv, install requirements
-make download-data    # fetch data/ (~1.3G) from Google Drive
+make download-data    # fetch data/ (~20G) from Google Drive
 make webpage          # http://localhost:8811
 ```
 
