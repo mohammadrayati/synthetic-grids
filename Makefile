@@ -20,7 +20,7 @@ DATA_ARCHIVE_GDRIVE_ID := https://drive.google.com/file/d/1vYCvXLE0ijEgwz3PlNXt8
 help:
 	@echo "synthetic-grids — available targets:"
 	@echo "  make setup        - create .venv and install requirements.txt"
-	@echo "  make download-data - fetch data/ (~1.3G) from Google Drive"
+	@echo "  make download-data - fetch data/ (~20G) from Google Drive"
 	@echo "  make webpage      - launch the Flask data-viewer server (:8811)"
 	@echo "  make clean-venv   - remove .venv"
 
