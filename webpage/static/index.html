@@ -99,17 +99,24 @@
     <h2>Scenario</h2>
     <label for="data-select">Data</label>
     <select id="data-select">
-      <option value="" selected>15-min power flow</option>
-      <option value="mean">10-s power flow, window mean</option>
-      <option value="max">10-s power flow, window max</option>
-      <option value="min">10-s power flow, window min</option>
-      <option value="std">10-s power flow, window std</option>
-      <option value="median">10-s power flow, window median</option>
-      <option value="q10">10-s power flow, window q10</option>
-      <option value="q90">10-s power flow, window q90</option>
+      <option value="15min" selected>15-min power flow</option>
+      <option value="10s">10-s power flow, 15-min window statistics</option>
     </select>
 
-    <label for="noise-select">Noise level (applied client-side)</label>
+    <div id="map-stat-row" hidden>
+      <label for="map-stat-select">Statistic shown on the map</label>
+      <select id="map-stat-select">
+        <option value="mean" selected>mean</option>
+        <option value="max">max</option>
+        <option value="min">min</option>
+        <option value="std">std</option>
+        <option value="median">median</option>
+        <option value="q10">q10</option>
+        <option value="q90">q90</option>
+      </select>
+    </div>
+
+    <label for="noise-select">Noise level</label>
     <select id="noise-select">
       <option value="0%" selected>0%</option>
       <option value="1%">1%</option>
@@ -130,6 +137,16 @@
       <option value="30%">30%</option>
     </select>
 
+    <div class="download-box">
+      <label>Download smart-meter + PMU data (CSV, zip)</label>
+      <div class="download-row">
+        <label for="download-start">From</label><input type="date" id="download-start">
+        <label for="download-end">To</label><input type="date" id="download-end">
+        <button id="download-btn" type="button">Download</button>
+      </div>
+      <div id="download-note" class="small-note"></div>
+    </div>
+
     <div class="tabs">
       <button class="tab-btn active" data-tab="smart-meter">Smart meters (table)</button>
       <button class="tab-btn" data-tab="pmu">PMU measurements (table)</button>
@@ -139,7 +156,7 @@
       <div id="smart-meter-note" class="small-note"></div>
       <div class="scroll-table">
         <table class="data-table" id="smart-meter-table">
-          <thead><tr><th>load</th><th>bus</th><th>vm_pu</th><th>p_mw</th><th>q_mvar</th></tr></thead>
+          <thead></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -149,7 +166,7 @@
       <div id="pmu-table-note" class="small-note"></div>
       <div class="scroll-table">
         <table class="data-table" id="pmu-table">
-          <thead><tr><th>bus</th><th>vm_pu</th><th>va_degree</th><th>p_mw</th><th>q_mvar</th><th>role</th></tr></thead>
+          <thead></thead>
           <tbody></tbody>
         </table>
       </div>

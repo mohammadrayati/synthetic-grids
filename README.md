@@ -49,10 +49,11 @@ Plain CSV/Parquet only — no pandapower or any other special package needed to 
 
 - `grid_topology/<voltage_level>/<category>/<grid_name>/` — per-grid topology and geodata (`buses.csv`, `lines.csv`, `trafos.csv`, `ext_grid.csv`, `loads.csv`, `bus_geodata.csv`, `line_geodata.csv`) and PMU-penetration bus assignments (`pmu_penetration_selection.csv`). `grid_topology/index.csv` lists all 35 grids.
 - `power_flow_results/<grid_id>/` — full 4-week/15-min power-flow results (voltages, angles, line loadings/currents) — the actual ground truth, as Parquet.
+- `power_flow_results_10s_stats/<grid_id>/` — 3 grids only (`LV__Alps-Periurban__5238-11_1_3_grid`, `MV__153_0_grid`, `MV_LV__ML_100_0_grid`): power flow every 10 s on a 10-s load signal whose 15-min mean equals `load_power/`, kept as mean/max/min/std/median/q10/q90 per 15-min window (bus, line, trafo, load).
 - `load_power/<voltage_level>/[<category>/]<grid_name>.csv` — the real ETH-derived p_mw/q_mvar time series per load (power-flow input).
 - `noise-model-config.csv` — the 6 noise levels x device x quantity reference table.
 - `pandapower_line_std_types.csv` — the cable catalogue (not used by the webpage itself, carried for `impedance-estimation/`'s use, which reads the same archive).
 
 ## The webpage
 
-Pick a grid (left), scrub the time slider (middle, over the full 4-week window, real OSM basemap), toggle map layers (voltage, line loading, load-flow arrows, node type, PMU markers, PV/prosumer loads — draggable colorbar ranges), and set a noise level / PMU-penetration scenario (right) to see the resulting smart-meter and PMU measurement tables.
+Pick a grid (left), scrub the time slider (middle, over the full 4-week window, real OSM basemap), toggle map layers (voltage, line loading, load-flow arrows, node type, PMU markers, PV/prosumer loads — draggable colorbar ranges), and set a noise level / PMU-penetration scenario (right) to see the resulting smart-meter and PMU measurement tables. "Data" switches between the 15-min power flow and, for the 3 grids that have it, the 10-s power flow: the tables then show all seven window statistics, and a second select picks which one colors the map. "Download" saves smart_meter.csv + pmu.csv for the chosen data, noise level, PMU penetration and date range as a zip. With 10-s data, noise is one draw per meter, window and quantity (sized from the window mean), added to every statistic except std.

@@ -2,10 +2,11 @@
 // Plain vanilla JS, no frameworks/build step. Two kinds of data source:
 //   - GET /data/...      : timestamp-independent JSON, computed live from grid-bundles/*.p by app.py
 //   - GET /api/<id>/...  : live ground truth for one timestamp, served by app.py (Flask) straight
-//                          from data/power_flow_results/<id>/{bus,line}.parquet, or, with the "Data"
-//                          select on a 10-s statistic, from data/power_flow_results_10s_stats/
+//                          from data/power_flow_results/<id>/{bus,line}.parquet, or, with "Data" set
+//                          to 10-s, from data/power_flow_results_10s_stats/
 // Noise (0-5%) is applied HERE, client-side, at render time (see "Noise" section below) — the
-// backend always returns clean values.
+// backend always returns clean values. The download (/api/<id>/download) adds the same noise
+// model server-side.
 // PMU measurement table (bus vm_pu + va_degree at the current PMU-penetration level) is served by
 // GET /api/<id>/pmu_readings?timestamp=...&penetration=... - parallel to the smart-meter table.
 //
@@ -41,7 +42,8 @@ const state = {
   sizeScale: 1.0, // user-adjustable marker/line size multiplier (Redo 5), persists across grids/time
   noiseLevel: "0%",
   pmuLevel: "0%",
-  stat: "",               // "" = 15-min power flow, else a 10-s window statistic (mean/max/.../q90)
+  dataMode: "15min",      // "15min" or "10s" (10-s power flow, kept as 15-min window statistics)
+  stat: "",               // statistic shown on the map: "" in 15-min mode, else mean/max/.../q90
   stdRange: null,         // {voltage, loading} color windows for stat=std, set from the backend's std_scale
   busById: null,
   busDistance: null,      // {busId: hop count from ext_grid root, via lines+trafos}
@@ -76,9 +78,8 @@ async function fetchJSON(path) {
 //   `${gridId}:${quantity}:${idKind}:${id}:${timestampIso}:${noiseLevel}`
 // so the SAME (grid, quantity, bus/line id, timestamp, noise level) combination always produces
 // the SAME perturbed value if the user revisits it (slider back-and-forth, overlay toggling,
-// etc.) — this is about a stable, reproducible *display*, not bit-parity with any Python
-// precomputation (nothing in Python computes noise at this timestamp resolution; the noisy
-// values here are computed nowhere else).
+// etc.) — this is about a stable, reproducible *display*, not bit-parity with Python: the
+// /download zip uses the same noise model but numpy's RNG, so its draws differ from the page's.
 //
 // PRNG: FNV-1a (32-bit) hashes the key string into an integer seed, mulberry32 turns that seed
 // into a stream of uniform [0,1) draws, and Box-Muller turns two uniform draws into one
@@ -116,9 +117,10 @@ function noiseKey(quantity, idKind, id) {
   return `${state.gridId}:${quantity}:${idKind}:${id}:${state.currentTimestampIso}:${state.noiseLevel}`;
 }
 
-// No noise on the 10-s window statistics: they are ground truth for a different question.
+// 10-s data: one draw per meter, window and quantity (same key as the 15-min value), sized from the
+// window mean and added to every statistic except std, so min <= q10 <= ... <= max still holds and
+// the spread is unchanged. Same model as the backend's /download.
 function noiseCfg(deviceType, quantity, level) {
-  if (state.stat) return undefined;
   return state.noiseConfig.find(
     (r) => r.device_type === deviceType && r.quantity === quantity && r.noise_level === level
   );
@@ -127,6 +129,7 @@ function noiseCfg(deviceType, quantity, level) {
 // Voltage overlay noise: modeled on the smart_meter/vm_pu entry (relative_to_value - fraction of
 // |measured value|). This is the closest real sensor analogue for "voltage reading at a bus".
 function noisyVoltage(vm, busId) {
+  if (state.stat === "std") return vm;
   const cfg = noiseCfg("smart_meter", "vm_pu", state.noiseLevel);
   if (!cfg || cfg.std_value <= 0) return vm;
   const sigma = cfg.std_value * Math.abs(vm);
@@ -139,6 +142,7 @@ function noisyVoltage(vm, busId) {
 // loading_percent. We reuse pmu/branch_i_ka's relative_to_value std as the closest available
 // current-magnitude noise spec (documented assumption - see report).
 function noisyLoading(pct, lineId) {
+  if (state.stat === "std") return pct;
   const cfg = noiseCfg("pmu", "branch_i_ka", state.noiseLevel);
   if (!cfg || cfg.std_value <= 0) return pct;
   const sigma = cfg.std_value * Math.abs(pct);
@@ -411,13 +415,18 @@ function statParam() {
   return state.stat ? `&stat=${state.stat}` : "";
 }
 
-// 10-s options only exist for grids with data/power_flow_results_10s_stats/; fall back to 15-min.
+function dataParam() {
+  return `&data=${state.dataMode}`;
+}
+
+// 10-s data only exists for grids with data/power_flow_results_10s_stats/; fall back to 15-min.
 function syncDataSelect() {
   const select = el("data-select");
-  for (const opt of select.options) opt.disabled = opt.value !== "" && !state.meta.has_10s_stats;
-  if (state.stat && !state.meta.has_10s_stats) state.stat = "";
-  select.value = state.stat;
-  el("noise-select").disabled = !!state.stat;
+  select.querySelector('option[value="10s"]').disabled = !state.meta.has_10s_stats;
+  if (!state.meta.has_10s_stats) state.dataMode = "15min";
+  select.value = state.dataMode;
+  el("map-stat-row").hidden = state.dataMode !== "10s";
+  state.stat = state.dataMode === "10s" ? el("map-stat-select").value : "";
   state.stdRange = null;
 }
 
@@ -1245,10 +1254,9 @@ function showBusTooltip(evt, b) {
   const raw = state.atData ? state.atData.bus[String(b.bus)] : null;
   const noisy = raw != null ? noisyVoltage(raw, b.bus) : null;
   let text = `Bus ${b.bus} (${b.name || ""})\nvn_kv: ${b.vn_kv}\nrole: ${b.role}\ngeodata: ${b.geo_source}`;
-  if (raw != null && state.stat) {
-    text += `\nvm_pu (10-s window ${state.stat}): ${raw.toFixed(5)}`;
-  } else if (raw != null) {
-    text += `\nvm_pu (clean): ${raw.toFixed(5)}`;
+  if (raw != null) {
+    const what = state.stat ? `10-s window ${state.stat}` : "clean";
+    text += `\nvm_pu (${what}): ${raw.toFixed(5)}`;
     text += `\nvm_pu (displayed, noise=${state.noiseLevel}): ${noisy.toFixed(5)}`;
   }
   showTooltip(evt, text);
@@ -1260,10 +1268,9 @@ function showLineTooltip(evt, line) {
   let text = `Line ${line.line} (${line.name || ""})\n${line.from_bus} → ${line.to_bus}\n` +
     `type: ${line.std_type || "n/a"}\nlength: ${(line.length_km * 1000).toFixed(1)} m\n` +
     `max I: ${line.max_i_ka} kA\ngeodata: ${line.geo_source}`;
-  if (raw != null && state.stat) {
-    text += `\nloading% (10-s window ${state.stat}): ${raw.toFixed(3)}`;
-  } else if (raw != null) {
-    text += `\nloading% (clean): ${raw.toFixed(3)}`;
+  if (raw != null) {
+    const what = state.stat ? `10-s window ${state.stat}` : "clean";
+    text += `\nloading% (${what}): ${raw.toFixed(3)}`;
     text += `\nloading% (displayed, noise=${state.noiseLevel}): ${noisy.toFixed(3)}`;
   }
   showTooltip(evt, text);
@@ -1278,7 +1285,7 @@ async function refreshSmartMeterTable() {
   const note = el("smart-meter-note");
   note.textContent = "Loading…";
   try {
-    const url = `/api/${state.gridId}/smart_meter?timestamp=${encodeURIComponent(state.currentTimestampIso)}${statParam()}`;
+    const url = `/api/${state.gridId}/smart_meter?timestamp=${encodeURIComponent(state.currentTimestampIso)}${dataParam()}`;
     const resp = await fetchJSON(url);
     renderSmartMeterTable(resp);
   } catch (err) {
@@ -1286,23 +1293,61 @@ async function refreshSmartMeterTable() {
   }
 }
 
+const STATS = ["mean", "max", "min", "std", "median", "q10", "q90"];
+
+// {stat: value} + one noise offset on every stat except std (see noiseCfg's comment).
+function shiftStats(stats, delta) {
+  const out = {};
+  for (const s of STATS) out[s] = s === "std" ? stats[s] : stats[s] + delta;
+  return out;
+}
+
+function setTableHead(tableId, columns) {
+  const tr = document.createElement("tr");
+  for (const [name, stat] of columns) {
+    const th = document.createElement("th");
+    th.innerHTML = stat ? `${name}<br><span class="th-stat">${stat}</span>` : name;
+    tr.appendChild(th);
+  }
+  const head = document.querySelector(`#${tableId} thead`);
+  head.innerHTML = "";
+  head.appendChild(tr);
+}
+
+const statColumns = (name) => STATS.map((s) => [name, s]);
+const statCells = (stats, digits, exp) =>
+  STATS.map((s) => `<td>${exp ? stats[s].toExponential(digits) : stats[s].toFixed(digits)}</td>`).join("");
+
 function renderSmartMeterTable(resp) {
   const body = document.querySelector("#smart-meter-table tbody");
   body.innerHTML = "";
   const rows = [...resp.loads].sort((a, b) => a.load - b.load);
+  const tenS = resp.data === "10s";
+  setTableHead("smart-meter-table", tenS
+    ? [["load"], ["bus"], ...statColumns("vm_pu"), ...statColumns("p_mw"), ...statColumns("q_mvar")]
+    : [["load"], ["bus"], ["vm_pu"], ["p_mw"], ["q_mvar"]]);
   for (const r of rows) {
-    const [np, nq] = noisySmartMeterPQ(r.p_mw, r.q_mvar, r.load);
-    const nv = noisySmartMeterVm(r.vm_pu, r.load);
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${r.load}</td><td>${r.bus}</td>
-      <td>${nv != null ? nv.toFixed(4) : "n/a"}</td>
-      <td>${np.toExponential(3)}</td>
-      <td>${nq.toExponential(3)}</td>`;
+    if (tenS) {
+      const [np, nq] = noisySmartMeterPQ(r.p_mw.mean, r.q_mvar.mean, r.load);
+      const nv = noisySmartMeterVm(r.vm_pu.mean, r.load);
+      tr.innerHTML = `<td>${r.load}</td><td>${r.bus}</td>` +
+        statCells(shiftStats(r.vm_pu, nv - r.vm_pu.mean), 4) +
+        statCells(shiftStats(r.p_mw, np - r.p_mw.mean), 3, true) +
+        statCells(shiftStats(r.q_mvar, nq - r.q_mvar.mean), 3, true);
+    } else {
+      const [np, nq] = noisySmartMeterPQ(r.p_mw, r.q_mvar, r.load);
+      const nv = noisySmartMeterVm(r.vm_pu, r.load);
+      tr.innerHTML = `<td>${r.load}</td><td>${r.bus}</td>
+        <td>${nv != null ? nv.toFixed(4) : "n/a"}</td>
+        <td>${np.toExponential(3)}</td>
+        <td>${nq.toExponential(3)}</td>`;
+    }
     body.appendChild(tr);
   }
-  el("smart-meter-note").textContent = state.stat
-    ? `${rows.length} loads at ${resp.timestamp} · 10-s power flow, window ${state.stat} · magnitude only, no phase.`
-    : `${rows.length} loads at ${resp.timestamp} · noise level: ${state.noiseLevel} · magnitude only, no phase.`;
+  const source = tenS ? "10-s power flow, 15-min window statistics" : "15-min power flow";
+  el("smart-meter-note").textContent =
+    `${rows.length} loads at ${resp.timestamp} · ${source} · noise level: ${state.noiseLevel} · magnitude only, no phase.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1314,7 +1359,7 @@ async function refreshPmuTable() {
   const note = el("pmu-table-note");
   note.textContent = "Loading…";
   try {
-    const url = `/api/${state.gridId}/pmu_readings?timestamp=${encodeURIComponent(state.currentTimestampIso)}&penetration=${encodeURIComponent(state.pmuLevel)}`;
+    const url = `/api/${state.gridId}/pmu_readings?timestamp=${encodeURIComponent(state.currentTimestampIso)}&penetration=${encodeURIComponent(state.pmuLevel)}${dataParam()}`;
     const resp = await fetchJSON(url);
     renderPmuTable(resp);
   } catch (err) {
@@ -1326,6 +1371,10 @@ function renderPmuTable(resp) {
   const body = document.querySelector("#pmu-table tbody");
   body.innerHTML = "";
   const note = el("pmu-table-note");
+  const tenS = resp.data === "10s";
+  setTableHead("pmu-table", tenS
+    ? [["bus"], ...statColumns("vm_pu"), ...statColumns("va_degree"), ["p_mw", "mean"], ["q_mvar", "mean"], ["role"]]
+    : [["bus"], ["vm_pu"], ["va_degree"], ["p_mw"], ["q_mvar"], ["role"]]);
 
   if (!resp.pmus || resp.pmus.length === 0) {
     note.textContent = state.pmuLevel === "0%"
@@ -1336,22 +1385,61 @@ function renderPmuTable(resp) {
 
   const rows = [...resp.pmus].sort((a, b) => a.bus - b.bus);
   for (const r of rows) {
-    const nvm = noisyPmuVm(r.vm_pu, r.bus);
-    const nva = noisyPmuVa(r.va_degree, r.bus);
-    const [np, nq] = noisyPmuPQ(r.p_mw, r.q_mvar, r.bus);
+    const role = `<td>${r.is_feeder_root ? "feeder-root" : "added"}</td>`;
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${r.bus}</td>
-      <td>${nvm != null ? nvm.toFixed(5) : "n/a"}</td>
-      <td>${nva != null ? nva.toFixed(4) : "n/a"}</td>
-      <td>${np.toExponential(3)}</td>
-      <td>${nq.toExponential(3)}</td>
-      <td>${r.is_feeder_root ? "feeder-root" : "added"}</td>`;
+    if (tenS) {
+      const nvm = noisyPmuVm(r.vm_pu.mean, r.bus);
+      const nva = noisyPmuVa(r.va_degree.mean, r.bus);
+      const [np, nq] = noisyPmuPQ(r.p_mw_mean, r.q_mvar_mean, r.bus);
+      tr.innerHTML = `<td>${r.bus}</td>` +
+        statCells(shiftStats(r.vm_pu, nvm - r.vm_pu.mean), 5) +
+        statCells(shiftStats(r.va_degree, nva - r.va_degree.mean), 4) +
+        `<td>${np.toExponential(3)}</td><td>${nq.toExponential(3)}</td>` + role;
+    } else {
+      const nvm = noisyPmuVm(r.vm_pu, r.bus);
+      const nva = noisyPmuVa(r.va_degree, r.bus);
+      const [np, nq] = noisyPmuPQ(r.p_mw, r.q_mvar, r.bus);
+      tr.innerHTML = `<td>${r.bus}</td>
+        <td>${nvm != null ? nvm.toFixed(5) : "n/a"}</td>
+        <td>${nva != null ? nva.toFixed(4) : "n/a"}</td>
+        <td>${np.toExponential(3)}</td>
+        <td>${nq.toExponential(3)}</td>` + role;
+    }
     body.appendChild(tr);
   }
   note.textContent =
     `${rows.length} PMU(s) at ${resp.timestamp} · penetration: ${resp.penetration_level} · ` +
-    `noise level: ${state.noiseLevel} · magnitude + phase + net P/Q injection.` +
-    (state.stat ? " Always from the 15-min power flow (no 10-s statistics for PMUs)." : "");
+    `noise level: ${state.noiseLevel} · magnitude + phase + net P/Q injection` +
+    (tenS ? " (P/Q: window mean only)." : ".");
+}
+
+// ---------------------------------------------------------------------------
+// Download (smart_meter.csv + pmu.csv for a date range, built by the backend)
+// ---------------------------------------------------------------------------
+
+function setupDownload() {
+  const start = el("download-start"), end = el("download-end");
+  for (const input of [start, end]) {
+    input.min = state.timeRange.start.slice(0, 10);
+    input.max = state.timeRange.end.slice(0, 10);
+  }
+  start.value = start.min;
+  end.value = end.max;
+  el("download-btn").addEventListener("click", () => {
+    if (!state.gridId) return;
+    if (end.value < start.value) {
+      el("download-note").textContent = "'To' is before 'From'.";
+      return;
+    }
+    const q = new URLSearchParams({
+      data: state.dataMode, noise: state.noiseLevel, penetration: state.pmuLevel,
+      start: start.value, end: end.value,
+    });
+    window.location.href = `/api/${state.gridId}/download?${q}`;
+    el("download-note").textContent =
+      `Building the zip for ${state.gridId.split("__").pop()} (${state.dataMode}, noise ${state.noiseLevel}, ` +
+      `PMU ${state.pmuLevel}); the download starts when it is ready (a large grid can take a minute or two).`;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1371,6 +1459,7 @@ async function main() {
   state.noiseConfig = noiseConfig;
   state.timeRange = timeRange;
   setupTimeControl();
+  setupDownload();
   setupMapResize();
   setupColumnResize();
 
@@ -1395,11 +1484,15 @@ async function main() {
     refreshPmuTable();
   });
   el("data-select").addEventListener("change", async (e) => {
-    state.stat = e.target.value;
+    state.dataMode = e.target.value;
     syncDataSelect();
     await refreshAtTimestamp();
     await refreshSmartMeterTable();
     await refreshPmuTable();
+  });
+  el("map-stat-select").addEventListener("change", async () => {
+    syncDataSelect();
+    await refreshAtTimestamp();
   });
   el("pmu-select").addEventListener("change", (e) => {
     state.pmuLevel = e.target.value;

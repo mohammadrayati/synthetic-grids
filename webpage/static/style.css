@@ -523,3 +523,27 @@ table.data-table th {
   /* Redo 9: must sit above Leaflet's own panes/controls, same reasoning as #tooltip above. */
   z-index: 1900;
 }
+
+.download-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.download-row label { display: inline; margin: 0; }
+.download-row input[type="date"] {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+}
+#download-btn {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+#download-btn:hover { background: #f0f3f7; }
+.th-stat { font-weight: normal; color: var(--muted); }

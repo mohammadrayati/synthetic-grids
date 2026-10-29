@@ -23,10 +23,15 @@ Endpoints:
   GET /api/<grid_id>/at?timestamp=<iso8601>        -> {timestamp, bus: {bus_id: vm_pu, ...},
                                                         line: {line_id: loading_percent, ...}}
   GET /api/<grid_id>/smart_meter?timestamp=<iso8601> -> [{load, bus, p_mw, q_mvar, vm_pu}, ...]
-      Both /at and /smart_meter take an optional &stat=<mean|max|min|std|median|q10|q90>: values
-      then come from data/power_flow_results_10s_stats/ (10-s power flow, statistics per 15-min
-      window; only some grids have it, see meta.json's has_10s_stats). With stat=std, /at also
-      returns std_scale = {bus, line}: the grid's 99th percentile of that std, for the color scale.
+      /at takes an optional &stat=<mean|max|min|std|median|q10|q90>: values then come from
+      data/power_flow_results_10s_stats/ (10-s power flow, statistics per 15-min window; only some
+      grids have it, see meta.json's has_10s_stats). With stat=std, /at also returns
+      std_scale = {bus, line}: the grid's 99th percentile of that std, for the color scale.
+      /smart_meter and /pmu_readings take an optional &data=10s: every quantity is then a
+      {stat: value} dict over all seven statistics.
+  GET /api/<grid_id>/download?data=<15min|10s>&noise=<level>&penetration=<level>&start=<date>&end=<date>
+      -> zip of smart_meter.csv + pmu.csv for every timestamp in [start, end] (dates inclusive),
+         noise added server-side (seeded, same noise config as the page).
   GET /api/<grid_id>/pmu_readings?timestamp=<iso8601>&penetration=<level>
                                                       -> {pmus: [{bus, vm_pu, va_degree, p_mw,
                                                         q_mvar, is_feeder_root}, ...]} for every
@@ -46,13 +51,20 @@ clamping/error handling so a bad request doesn't crash the process.
 """
 import functools
 import json
+import os
+import tempfile
 import threading
+import zipfile
+import zlib
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 import pyproj
-from flask import Flask, abort, jsonify, request, redirect, send_from_directory
+from flask import Flask, abort, jsonify, request, redirect, send_file, send_from_directory
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ORGANIZED_DIR = PROJECT_ROOT / "data" / "grid_topology"
@@ -381,6 +393,28 @@ def highres_at(grid_id: str, element: str, column: str, ts: pd.Timestamp):
     return snapped, dict(zip(rows[element].tolist(), rows[column].astype(float).tolist()))
 
 
+def highres_rows(grid_id: str, element: str, ts: pd.Timestamp):
+    """(snapped timestamp, every statistic column of one element file at one window). Reads by
+    row-group filter instead of the per-column cache: all 7 stats of an MV_LV file don't fit it."""
+    path = HIGHRES_DIR / grid_id / f"{element}.parquet"
+    if not path.exists():
+        abort(404, description=f"No 10-s statistics for grid_id: {grid_id}")
+    snapped = snap_timestamp(get_unique_timestamps(grid_id), ts)
+    df = pq.read_table(path, filters=[("timestamp_utc", "==", snapped)]).to_pandas()
+    return snapped, df.set_index(element)
+
+
+def stat_dicts(row, quantities) -> dict:
+    return {q: {s: float(row[f"{q}_{s}"]) for s in HIGHRES_STATS} for q in quantities}
+
+
+def is_10s() -> bool:
+    data = request.args.get("data", "15min")
+    if data not in ("15min", "10s"):
+        abort(400, description=f"Unknown data {data!r}; available: ['15min', '10s']")
+    return data == "10s"
+
+
 @functools.lru_cache(maxsize=GRID_CACHE_SIZE)
 def get_std_scale(grid_id: str) -> dict:
     return {
@@ -559,15 +593,14 @@ def api_smart_meter(grid_id):
     ts = parse_timestamp(raw_ts)
 
     loads_meta = get_loads_meta(grid_id)
-    stat = parse_stat()
-    if stat:
-        snapped, vm_by_bus = highres_at(grid_id, "bus", f"vm_pu_{stat}", ts)
-        _, p_by_load = highres_at(grid_id, "load", f"p_mw_{stat}", ts)
-        _, q_by_load = highres_at(grid_id, "load", f"q_mvar_{stat}", ts)
-        out = [{"load": int(load_id), "bus": int(bus_id), "p_mw": p_by_load[load_id],
-                "q_mvar": q_by_load[load_id], "vm_pu": vm_by_bus.get(int(bus_id))}
+    if is_10s():
+        snapped, bus_rows = highres_rows(grid_id, "bus", ts)
+        _, load_rows = highres_rows(grid_id, "load", ts)
+        out = [{"load": int(load_id), "bus": int(bus_id),
+                **stat_dicts(load_rows.loc[load_id], ("p_mw", "q_mvar")),
+                **stat_dicts(bus_rows.loc[bus_id], ("vm_pu",))}
                for load_id, bus_id in zip(loads_meta["load"], loads_meta["bus"])]
-        return jsonify({"grid_id": grid_id, "requested_timestamp": raw_ts, "stat": stat,
+        return jsonify({"grid_id": grid_id, "requested_timestamp": raw_ts, "data": "10s",
                         "timestamp": snapped.isoformat() + "Z", "loads": out})
 
     bus_df = get_bus_df(grid_id)
@@ -635,6 +668,19 @@ def api_pmu_readings(grid_id):
             "pmus": [],
         })
 
+    if is_10s():
+        # P/Q: sum of the bus's load means, exact for the mean only (a max of a sum is not a sum of maxes).
+        snapped, bus_rows = highres_rows(grid_id, "bus", ts)
+        _, load_rows = highres_rows(grid_id, "load", ts)
+        bus_loads = get_bus_loads_map(grid_id)
+        pmus = [{"bus": int(bus_id), **stat_dicts(bus_rows.loc[bus_id], ("vm_pu", "va_degree")),
+                 "p_mw_mean": float(load_rows.loc[bus_loads.get(bus_id, []), "p_mw_mean"].sum()),
+                 "q_mvar_mean": float(load_rows.loc[bus_loads.get(bus_id, []), "q_mvar_mean"].sum()),
+                 "is_feeder_root": bus_id == feeder_root_bus}
+                for bus_id in bus_ids]
+        return jsonify({"grid_id": grid_id, "penetration_level": level, "requested_timestamp": raw_ts,
+                        "data": "10s", "timestamp": snapped.isoformat() + "Z", "pmus": pmus})
+
     bus_df = get_bus_full_df(grid_id)
     unique_ts = get_unique_timestamps(grid_id)
     snapped = snap_timestamp(unique_ts, ts)
@@ -675,6 +721,138 @@ def api_pmu_readings(grid_id):
         "timestamp": snapped.isoformat() + "Z",
         "pmus": pmus,
     })
+
+
+# ---------------------------------------------------------------------------
+# Route: scenario download (smart_meter.csv + pmu.csv for a date range, noise applied)
+# ---------------------------------------------------------------------------
+
+def noise_sigma(device, quantity, level, value, p=None, q=None):
+    """Noise std per row, same model as the page's (data/noise-model-config.csv); None = no noise."""
+    for r in get_noise_levels():
+        if (r["device_type"], r["quantity"], r["noise_level"]) == (device, quantity, level):
+            if r["std_value"] <= 0:
+                return None
+            if r["noise_basis"] == "relative_to_value":
+                return r["std_value"] * value.abs()
+            if r["noise_basis"] == "relative_to_apparent_power":
+                return r["std_value"] * np.hypot(p, q)
+            return r["std_value"]
+    return None
+
+
+def add_noise(df, rng, level, ten_s, device, specs):
+    """specs: (config quantity, column stem). One draw per row and quantity, sized from the
+    (window-mean) value; for 10-s data it shifts every location stat by the same amount, so
+    min <= q10 <= ... <= max still holds, and leaves std alone (an offset has no spread)."""
+    sfx = "_mean" if ten_s else ""
+    clean = df.copy()
+    for quantity, col in specs:
+        if col + sfx not in df:
+            continue
+        sigma = noise_sigma(device, quantity, level, clean[col + sfx],
+                            clean.get("p_mw" + sfx), clean.get("q_mvar" + sfx))
+        if sigma is None:
+            continue
+        offset = rng.standard_normal(len(df)) * sigma
+        for c in ([f"{col}_{s}" for s in HIGHRES_STATS if s != "std"] if ten_s else [col]):
+            if c in df:
+                df[c] = clean[c] + offset
+
+
+def read_highres_range(grid_id, element, columns, start, end, ids=None):
+    filters = [("timestamp_utc", ">=", start), ("timestamp_utc", "<", end)]
+    if ids is not None:
+        filters.append((element, "in", ids))
+    path = HIGHRES_DIR / grid_id / f"{element}.parquet"
+    if not path.exists():
+        abort(404, description=f"No 10-s statistics for grid_id: {grid_id}")
+    return pq.read_table(path, columns=["timestamp_utc", element, *columns], filters=filters).to_pandas()
+
+
+def scenario_frames(grid_id, ten_s, level, start, end):
+    """(smart_meter, pmu) DataFrames for timestamps in [start, end), clean."""
+    loads_meta = get_loads_meta(grid_id)
+    pmu_info = get_pmu_penetration(grid_id)[level]
+    pmu_buses = pmu_info["buses"]
+
+    if ten_s:
+        stat_cols = lambda *qs: [f"{q}_{s}" for q in qs for s in HIGHRES_STATS]
+        load = read_highres_range(grid_id, "load", stat_cols("p_mw", "q_mvar"), start, end)
+        load = load.merge(loads_meta, on="load")
+        bus = read_highres_range(grid_id, "bus", stat_cols("vm_pu"), start, end)
+        sm = load.merge(bus, on=["timestamp_utc", "bus"], how="left")
+        sm = sm[["timestamp_utc", "load", "bus", *stat_cols("vm_pu", "p_mw", "q_mvar")]]
+        pmu = read_highres_range(grid_id, "bus", stat_cols("vm_pu", "va_degree"), start, end, pmu_buses)
+        load = load.rename(columns={"p_mw_mean": "p_mw", "q_mvar_mean": "q_mvar"})
+    else:
+        lp = get_load_profile_df(grid_id)
+        lp = lp[(lp.index >= start) & (lp.index < end)]
+        bus = get_bus_full_df(grid_id)
+        bus = bus[(bus.index >= start) & (bus.index < end)].reset_index()
+        load_ids = loads_meta["load"].to_numpy()
+        n_ts, n_load = len(lp), len(load_ids)
+        load = pd.DataFrame({
+            "timestamp_utc": np.repeat(lp.index.to_numpy(), n_load),
+            "load": np.tile(load_ids, n_ts),
+            "bus": np.tile(loads_meta["bus"].to_numpy(), n_ts),
+            "p_mw": lp[[f"load_{i}_p_mw" for i in load_ids]].to_numpy().reshape(-1),
+            "q_mvar": lp[[f"load_{i}_q_mvar" for i in load_ids]].to_numpy().reshape(-1),
+        })
+        sm = load.merge(bus[["timestamp_utc", "bus", "vm_pu"]], on=["timestamp_utc", "bus"], how="left")
+        sm = sm[["timestamp_utc", "load", "bus", "vm_pu", "p_mw", "q_mvar"]]
+        pmu = bus[bus["bus"].isin(pmu_buses)]
+
+    # PMU P/Q = net injection of the bus's loads (see get_bus_loads_map); 10-s: window mean only,
+    # since a sum of means is the mean of the sum but a sum of maxes is not the max of the sum.
+    p, q = ("p_mw_mean", "q_mvar_mean") if ten_s else ("p_mw", "q_mvar")
+    inj = (load[load["bus"].isin(pmu_buses)].groupby(["timestamp_utc", "bus"])[["p_mw", "q_mvar"]]
+           .sum().rename(columns={"p_mw": p, "q_mvar": q}).reset_index())
+    pmu = pmu.merge(inj, on=["timestamp_utc", "bus"], how="left").fillna({p: 0.0, q: 0.0})
+    pmu["is_feeder_root"] = pmu["bus"] == pmu_info["feeder_root_bus"]
+    pmu = pmu[["timestamp_utc", "bus", *[c for c in pmu.columns if c not in ("timestamp_utc", "bus")]]]
+    return (sm.sort_values(["timestamp_utc", "load"], ignore_index=True),
+            pmu.sort_values(["timestamp_utc", "bus"], ignore_index=True))
+
+
+@app.route("/api/<grid_id>/download")
+def api_download(grid_id):
+    ten_s = is_10s()
+    noise = request.args.get("noise", "0%")
+    level = request.args.get("penetration", "0%")
+    if noise not in {r["noise_level"] for r in get_noise_levels()}:
+        abort(400, description=f"Unknown noise level {noise!r}")
+    if level not in get_pmu_penetration(grid_id):
+        abort(400, description=f"Unknown penetration level {level!r}")
+    tr = get_time_range()
+    start = parse_timestamp(request.args.get("start") or tr["start"]).normalize()
+    last_day = parse_timestamp(request.args.get("end") or tr["end"]).normalize()
+    end = last_day + pd.Timedelta(days=1)
+    if end <= start:
+        abort(400, description="end is before start")
+
+    sm, pmu = scenario_frames(grid_id, ten_s, level, start, end)
+    rng = np.random.default_rng(zlib.crc32(f"{grid_id}:{ten_s}:{noise}:{level}:{start}:{end}".encode()))
+    add_noise(sm, rng, noise, ten_s, "smart_meter",
+              [("vm_pu", "vm_pu"), ("p_mw", "p_mw"), ("q_mvar", "q_mvar")])
+    add_noise(pmu, rng, noise, ten_s, "pmu",
+              [("vm_pu", "vm_pu"), ("va_degree", "va_degree"), ("far_p_mw", "p_mw"), ("far_q_mvar", "q_mvar")])
+
+    name = (f"{grid_id}_{'10s' if ten_s else '15min'}_noise{noise.rstrip('%')}_"
+            f"pmu{level.rstrip('%')}_{start:%Y%m%d}-{last_day:%Y%m%d}")
+    fd, tmp = tempfile.mkstemp(suffix=".zip")
+    os.close(fd)
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
+        for fname, df in (("smart_meter.csv", sm), ("pmu.csv", pmu)):
+            df["timestamp_utc"] = df["timestamp_utc"].dt.strftime("%Y-%m-%d %H:%M:%S")
+            if ten_s:  # the 10-s files are float32; keep that instead of float64's 17 digits
+                floats = df.select_dtypes("float64").columns
+                df[floats] = df[floats].astype("float32")
+            with zf.open(f"{name}/{fname}", "w", force_zip64=True) as fh:
+                pacsv.write_csv(pa.Table.from_pandas(df, preserve_index=False), fh)
+    fh = open(tmp, "rb")
+    os.unlink(tmp)  # the open handle keeps the data until send_file closes it
+    return send_file(fh, mimetype="application/zip", as_attachment=True, download_name=f"{name}.zip")
 
 
 @app.after_request
