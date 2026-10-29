@@ -2,7 +2,8 @@
 // Plain vanilla JS, no frameworks/build step. Two kinds of data source:
 //   - GET /data/...      : timestamp-independent JSON, computed live from grid-bundles/*.p by app.py
 //   - GET /api/<id>/...  : live ground truth for one timestamp, served by app.py (Flask) straight
-//                          from data/power_flow_results/<id>/{bus,line}.parquet
+//                          from data/power_flow_results/<id>/{bus,line}.parquet, or, with the "Data"
+//                          select on a 10-s statistic, from data/power_flow_results_10s_stats/
 // Noise (0-5%) is applied HERE, client-side, at render time (see "Noise" section below) — the
 // backend always returns clean values.
 // PMU measurement table (bus vm_pu + va_degree at the current PMU-penetration level) is served by
@@ -40,6 +41,8 @@ const state = {
   sizeScale: 1.0, // user-adjustable marker/line size multiplier (Redo 5), persists across grids/time
   noiseLevel: "0%",
   pmuLevel: "0%",
+  stat: "",               // "" = 15-min power flow, else a 10-s window statistic (mean/max/.../q90)
+  stdRange: null,         // {voltage, loading} color windows for stat=std, set from the backend's std_scale
   busById: null,
   busDistance: null,      // {busId: hop count from ext_grid root, via lines+trafos}
   lineDownstreamBus: null, // {lineId: bus id of the farther-from-root endpoint}
@@ -113,7 +116,9 @@ function noiseKey(quantity, idKind, id) {
   return `${state.gridId}:${quantity}:${idKind}:${id}:${state.currentTimestampIso}:${state.noiseLevel}`;
 }
 
+// No noise on the 10-s window statistics: they are ground truth for a different question.
 function noiseCfg(deviceType, quantity, level) {
+  if (state.stat) return undefined;
   return state.noiseConfig.find(
     (r) => r.device_type === deviceType && r.quantity === quantity && r.noise_level === level
   );
@@ -228,11 +233,11 @@ function colorScale3(value, vMin, vMid, vMax) {
 }
 
 function voltageColor(vm) {
-  const { min, max } = state.voltageRange;
+  const { min, max } = state.stat === "std" ? state.stdRange.voltage : state.voltageRange;
   return colorScale3(vm, min, (min + max) / 2, max);
 }
 function loadingColor(pct) {
-  const { min, max } = state.loadingRange;
+  const { min, max } = state.stat === "std" ? state.stdRange.loading : state.loadingRange;
   return colorScale3(pct, min, (min + max) / 2, max);
 }
 
@@ -337,6 +342,7 @@ async function selectGrid(gridId) {
   state.meta = meta;
   state.topology = topology;
   state.pmuPenetration = pmuPenetration;
+  syncDataSelect();
 
   renderGridSummary();
   computeFlowTopology();
@@ -401,11 +407,31 @@ function setupTimeControl() {
   updateTimeDisplay();
 }
 
+function statParam() {
+  return state.stat ? `&stat=${state.stat}` : "";
+}
+
+// 10-s options only exist for grids with data/power_flow_results_10s_stats/; fall back to 15-min.
+function syncDataSelect() {
+  const select = el("data-select");
+  for (const opt of select.options) opt.disabled = opt.value !== "" && !state.meta.has_10s_stats;
+  if (state.stat && !state.meta.has_10s_stats) state.stat = "";
+  select.value = state.stat;
+  el("noise-select").disabled = !!state.stat;
+  state.stdRange = null;
+}
+
 async function refreshAtTimestamp() {
   if (!state.gridId) return;
   updateTimeDisplay();
-  const url = `/api/${state.gridId}/at?timestamp=${encodeURIComponent(state.currentTimestampIso)}`;
+  const url = `/api/${state.gridId}/at?timestamp=${encodeURIComponent(state.currentTimestampIso)}${statParam()}`;
   state.atData = await fetchJSON(url);
+  if (state.stat === "std" && !state.stdRange) {
+    state.stdRange = {
+      voltage: { min: 0, max: state.atData.std_scale.bus },
+      loading: { min: 0, max: state.atData.std_scale.line },
+    };
+  }
   // The backend may have snapped to a slightly different (nearest) grid timestamp than what we
   // asked for (only relevant right at load/clamp edges) - use its answer as the noise-key anchor
   // so overlay noise is consistent with what's actually displayed.
@@ -744,7 +770,7 @@ function renderFlowArrows() {
     const angleDeg = Math.atan2(dy, dx) * 180 / Math.PI;
 
     const raw = state.atData.line[line.line];
-    const pct = raw != null ? Math.max(0, Math.min(100, raw)) : 0;
+    const pct = raw != null && state.stat !== "std" ? Math.max(0, Math.min(100, raw)) : 0;
     const len = minLen + (maxLen - minLen) * (pct / 100);
     const halfW = len * 0.32;
     const box = Math.ceil(len + 4); // square icon bounding box, a little slack around the triangle
@@ -847,9 +873,14 @@ function renderProsumerMarkers() {
 function renderColorbar() {
   const box = el("colorbar");
   box.innerHTML = "";
+  if (state.stat === "std") {
+    renderStdColorbar(box);
+    return;
+  }
+  const suffix = state.stat ? `, 10-s window ${state.stat}` : "";
   if (state.layers.voltage) {
     box.appendChild(buildColorbarWidget({
-      title: "Voltage (vm_pu)",
+      title: `Voltage (vm_pu${suffix})`,
       domain: VOLTAGE_DOMAIN,
       range: state.voltageRange,
       defaultRange: { min: 0.95, max: 1.05 },
@@ -861,7 +892,7 @@ function renderColorbar() {
   }
   if (state.layers.loading) {
     box.appendChild(buildColorbarWidget({
-      title: "Line loading (%)",
+      title: `Line loading (%${suffix})`,
       domain: LOADING_DOMAIN,
       range: state.loadingRange,
       defaultRange: { min: 0, max: 100 },
@@ -869,6 +900,36 @@ function renderColorbar() {
       formatHandle: (v) => `${Math.round(v)}%`,
       formatDomain: (v) => `${Math.round(v)}%`,
       onRangeChange: (r) => { state.loadingRange = r; updateBusesAndLines(); },
+    }));
+  }
+}
+
+// std has no natural window like 0.95-1.05 pu: the domain runs from 0 to the grid's 99th
+// percentile of that std over all windows (std_scale from the backend).
+function renderStdColorbar(box) {
+  const scale = state.atData.std_scale;
+  if (state.layers.voltage) {
+    box.appendChild(buildColorbarWidget({
+      title: "Voltage std inside 15-min window (pu)",
+      domain: { min: 0, max: scale.bus },
+      range: state.stdRange.voltage,
+      defaultRange: { min: 0, max: scale.bus },
+      minGap: scale.bus / 100,
+      formatHandle: (v) => v.toExponential(1),
+      formatDomain: (v) => v.toExponential(1),
+      onRangeChange: () => updateBusesAndLines(),
+    }));
+  }
+  if (state.layers.loading) {
+    box.appendChild(buildColorbarWidget({
+      title: "Line loading std inside 15-min window (%)",
+      domain: { min: 0, max: scale.line },
+      range: state.stdRange.loading,
+      defaultRange: { min: 0, max: scale.line },
+      minGap: scale.line / 100,
+      formatHandle: (v) => `${v.toFixed(1)}%`,
+      formatDomain: (v) => `${v.toFixed(1)}%`,
+      onRangeChange: () => updateBusesAndLines(),
     }));
   }
 }
@@ -1184,7 +1245,9 @@ function showBusTooltip(evt, b) {
   const raw = state.atData ? state.atData.bus[String(b.bus)] : null;
   const noisy = raw != null ? noisyVoltage(raw, b.bus) : null;
   let text = `Bus ${b.bus} (${b.name || ""})\nvn_kv: ${b.vn_kv}\nrole: ${b.role}\ngeodata: ${b.geo_source}`;
-  if (raw != null) {
+  if (raw != null && state.stat) {
+    text += `\nvm_pu (10-s window ${state.stat}): ${raw.toFixed(5)}`;
+  } else if (raw != null) {
     text += `\nvm_pu (clean): ${raw.toFixed(5)}`;
     text += `\nvm_pu (displayed, noise=${state.noiseLevel}): ${noisy.toFixed(5)}`;
   }
@@ -1197,7 +1260,9 @@ function showLineTooltip(evt, line) {
   let text = `Line ${line.line} (${line.name || ""})\n${line.from_bus} → ${line.to_bus}\n` +
     `type: ${line.std_type || "n/a"}\nlength: ${(line.length_km * 1000).toFixed(1)} m\n` +
     `max I: ${line.max_i_ka} kA\ngeodata: ${line.geo_source}`;
-  if (raw != null) {
+  if (raw != null && state.stat) {
+    text += `\nloading% (10-s window ${state.stat}): ${raw.toFixed(3)}`;
+  } else if (raw != null) {
     text += `\nloading% (clean): ${raw.toFixed(3)}`;
     text += `\nloading% (displayed, noise=${state.noiseLevel}): ${noisy.toFixed(3)}`;
   }
@@ -1213,7 +1278,7 @@ async function refreshSmartMeterTable() {
   const note = el("smart-meter-note");
   note.textContent = "Loading…";
   try {
-    const url = `/api/${state.gridId}/smart_meter?timestamp=${encodeURIComponent(state.currentTimestampIso)}`;
+    const url = `/api/${state.gridId}/smart_meter?timestamp=${encodeURIComponent(state.currentTimestampIso)}${statParam()}`;
     const resp = await fetchJSON(url);
     renderSmartMeterTable(resp);
   } catch (err) {
@@ -1235,8 +1300,9 @@ function renderSmartMeterTable(resp) {
       <td>${nq.toExponential(3)}</td>`;
     body.appendChild(tr);
   }
-  el("smart-meter-note").textContent =
-    `${rows.length} loads at ${resp.timestamp} · noise level: ${state.noiseLevel} · magnitude only, no phase.`;
+  el("smart-meter-note").textContent = state.stat
+    ? `${rows.length} loads at ${resp.timestamp} · 10-s power flow, window ${state.stat} · magnitude only, no phase.`
+    : `${rows.length} loads at ${resp.timestamp} · noise level: ${state.noiseLevel} · magnitude only, no phase.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1284,7 +1350,8 @@ function renderPmuTable(resp) {
   }
   note.textContent =
     `${rows.length} PMU(s) at ${resp.timestamp} · penetration: ${resp.penetration_level} · ` +
-    `noise level: ${state.noiseLevel} · magnitude + phase + net P/Q injection.`;
+    `noise level: ${state.noiseLevel} · magnitude + phase + net P/Q injection.` +
+    (state.stat ? " Always from the 15-min power flow (no 10-s statistics for PMUs)." : "");
 }
 
 // ---------------------------------------------------------------------------
@@ -1326,6 +1393,13 @@ async function main() {
     renderOverlay();
     refreshSmartMeterTable();
     refreshPmuTable();
+  });
+  el("data-select").addEventListener("change", async (e) => {
+    state.stat = e.target.value;
+    syncDataSelect();
+    await refreshAtTimestamp();
+    await refreshSmartMeterTable();
+    await refreshPmuTable();
   });
   el("pmu-select").addEventListener("change", (e) => {
     state.pmuLevel = e.target.value;

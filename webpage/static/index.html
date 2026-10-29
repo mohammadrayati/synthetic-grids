@@ -97,6 +97,18 @@
   <!-- RIGHT: scenario controls + measurement tables -->
   <div class="panel" id="panel-scenario">
     <h2>Scenario</h2>
+    <label for="data-select">Data</label>
+    <select id="data-select">
+      <option value="" selected>15-min power flow</option>
+      <option value="mean">10-s power flow, window mean</option>
+      <option value="max">10-s power flow, window max</option>
+      <option value="min">10-s power flow, window min</option>
+      <option value="std">10-s power flow, window std</option>
+      <option value="median">10-s power flow, window median</option>
+      <option value="q10">10-s power flow, window q10</option>
+      <option value="q90">10-s power flow, window q90</option>
+    </select>
+
     <label for="noise-select">Noise level (applied client-side)</label>
     <select id="noise-select">
       <option value="0%" selected>0%</option>

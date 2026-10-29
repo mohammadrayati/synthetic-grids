@@ -23,6 +23,10 @@ Endpoints:
   GET /api/<grid_id>/at?timestamp=<iso8601>        -> {timestamp, bus: {bus_id: vm_pu, ...},
                                                         line: {line_id: loading_percent, ...}}
   GET /api/<grid_id>/smart_meter?timestamp=<iso8601> -> [{load, bus, p_mw, q_mvar, vm_pu}, ...]
+      Both /at and /smart_meter take an optional &stat=<mean|max|min|std|median|q10|q90>: values
+      then come from data/power_flow_results_10s_stats/ (10-s power flow, statistics per 15-min
+      window; only some grids have it, see meta.json's has_10s_stats). With stat=std, /at also
+      returns std_scale = {bus, line}: the grid's 99th percentile of that std, for the color scale.
   GET /api/<grid_id>/pmu_readings?timestamp=<iso8601>&penetration=<level>
                                                       -> {pmus: [{bus, vm_pu, va_degree, p_mw,
                                                         q_mvar, is_feeder_root}, ...]} for every
@@ -54,6 +58,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ORGANIZED_DIR = PROJECT_ROOT / "data" / "grid_topology"
 GROUND_TRUTH_DIR = PROJECT_ROOT / "data" / "power_flow_results"
 LOAD_PROFILES_DIR = PROJECT_ROOT / "data" / "load_power"
+HIGHRES_DIR = PROJECT_ROOT / "data" / "power_flow_results_10s_stats"
+HIGHRES_STATS = ("mean", "max", "min", "std", "median", "q10", "q90")
 WEBPAGE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = WEBPAGE_DIR / "static"
 
@@ -190,6 +196,7 @@ def get_meta(grid_id: str) -> dict:
         "n_line": int(row.n_line),
         "n_trafo": int(row.n_trafo),
         "n_load": int(row.n_load),
+        "has_10s_stats": (HIGHRES_DIR / grid_id / "bus.parquet").exists(),
     }
 
 
@@ -347,6 +354,41 @@ def get_bus_full_df(grid_id: str) -> pd.DataFrame:
         return df
 
 
+@functools.lru_cache(maxsize=16)  # an MV_LV column is ~150 MB in memory
+def get_highres_df(grid_id: str, element: str, column: str) -> pd.DataFrame:
+    """One statistic column of data/power_flow_results_10s_stats/<grid_id>/<element>.parquet,
+    indexed by timestamp_utc. Read per column: the MV_LV files are several hundred MB each."""
+    path = HIGHRES_DIR / grid_id / f"{element}.parquet"
+    if not path.exists():
+        abort(404, description=f"No 10-s statistics for grid_id: {grid_id}")
+    with _load_lock:
+        df = pq.read_table(path, columns=["timestamp_utc", element, column]).to_pandas()
+        return df.set_index("timestamp_utc").sort_index()
+
+
+def parse_stat() -> str | None:
+    stat = request.args.get("stat")
+    if stat and stat not in HIGHRES_STATS:
+        abort(400, description=f"Unknown stat {stat!r}; available: {list(HIGHRES_STATS)}")
+    return stat or None
+
+
+def highres_at(grid_id: str, element: str, column: str, ts: pd.Timestamp):
+    """(snapped timestamp, {element id: value}) for one statistic column at one window."""
+    df = get_highres_df(grid_id, element, column)
+    snapped = snap_timestamp(pd.Index(df.index.unique()), ts)
+    rows = df.loc[[snapped]]
+    return snapped, dict(zip(rows[element].tolist(), rows[column].astype(float).tolist()))
+
+
+@functools.lru_cache(maxsize=GRID_CACHE_SIZE)
+def get_std_scale(grid_id: str) -> dict:
+    return {
+        "bus": float(get_highres_df(grid_id, "bus", "vm_pu_std")["vm_pu_std"].quantile(0.99)),
+        "line": float(get_highres_df(grid_id, "line", "loading_percent_std")["loading_percent_std"].quantile(0.99)),
+    }
+
+
 @functools.lru_cache(maxsize=GRID_CACHE_SIZE)
 def get_load_profile_df(grid_id: str) -> pd.DataFrame:
     with _load_lock:
@@ -479,6 +521,16 @@ def api_at(grid_id):
         abort(400, description="Missing required query param: timestamp")
     ts = parse_timestamp(raw_ts)
 
+    stat = parse_stat()
+    if stat:
+        snapped, bus_map = highres_at(grid_id, "bus", f"vm_pu_{stat}", ts)
+        _, line_map = highres_at(grid_id, "line", f"loading_percent_{stat}", ts)
+        resp = {"grid_id": grid_id, "requested_timestamp": raw_ts, "stat": stat,
+                "timestamp": snapped.isoformat() + "Z", "bus": bus_map, "line": line_map}
+        if stat == "std":
+            resp["std_scale"] = get_std_scale(grid_id)
+        return jsonify(resp)
+
     bus_df = get_bus_df(grid_id)
     line_df = get_line_df(grid_id)
     unique_ts = get_unique_timestamps(grid_id)
@@ -506,6 +558,18 @@ def api_smart_meter(grid_id):
         abort(400, description="Missing required query param: timestamp")
     ts = parse_timestamp(raw_ts)
 
+    loads_meta = get_loads_meta(grid_id)
+    stat = parse_stat()
+    if stat:
+        snapped, vm_by_bus = highres_at(grid_id, "bus", f"vm_pu_{stat}", ts)
+        _, p_by_load = highres_at(grid_id, "load", f"p_mw_{stat}", ts)
+        _, q_by_load = highres_at(grid_id, "load", f"q_mvar_{stat}", ts)
+        out = [{"load": int(load_id), "bus": int(bus_id), "p_mw": p_by_load[load_id],
+                "q_mvar": q_by_load[load_id], "vm_pu": vm_by_bus.get(int(bus_id))}
+               for load_id, bus_id in zip(loads_meta["load"], loads_meta["bus"])]
+        return jsonify({"grid_id": grid_id, "requested_timestamp": raw_ts, "stat": stat,
+                        "timestamp": snapped.isoformat() + "Z", "loads": out})
+
     bus_df = get_bus_df(grid_id)
     unique_ts = get_unique_timestamps(grid_id)
     snapped = snap_timestamp(unique_ts, ts)
@@ -519,7 +583,6 @@ def api_smart_meter(grid_id):
     if isinstance(row, pd.DataFrame):  # duplicate index safety net (shouldn't happen)
         row = row.iloc[0]
 
-    loads_meta = get_loads_meta(grid_id)
     out = []
     for load_id, bus_id in zip(loads_meta["load"], loads_meta["bus"]):
         p_col, q_col = f"load_{load_id}_p_mw", f"load_{load_id}_q_mvar"
