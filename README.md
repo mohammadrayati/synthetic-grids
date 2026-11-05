@@ -63,6 +63,8 @@ sg.power_flow(grid, data, "bus")  # power-flow results; also "line", "trafo"
 sg.line_catalogue(data)           # cable catalogue
 ```
 
+With the `pandapower` extra (`pip install "synthetic-grids[pandapower] @ git+https://github.com/mohammadrayati/synthetic-grids.git"`), `synthetic_grids.pandapower_net` builds a grid as a pandapower net (`to_pandapower`) and runs it at dataset timestamps to give smart-meter style measurements (`measurements`).
+
 ## What's in `data/`
 
 Plain CSV/Parquet only — no pandapower or any other special package needed to read any of it.

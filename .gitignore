@@ -8,3 +8,5 @@ data-archive-download.tar.gz
 # shared Drive archive (see Makefile) - not tracked here since it's derived from the main
 # project's own data/, not source.
 data/
+build/
+*.egg-info/
