@@ -43,6 +43,26 @@ python get_scenario_data.py --grid LV__Alps-Periurban__5238-11_1_3_grid --noise 
 | MV  | `MV__153_0_grid` |
 | MV_LV | `MV_LV__ML_0_0_grid` |
 
+## Use it from Python
+
+Install the small read-only package from another project (it only needs pandas and pyarrow) and point it at a downloaded `data/` folder:
+
+```
+pip install git+https://github.com/mohammadrayati/synthetic-grids.git
+```
+
+```python
+import synthetic_grids as sg
+
+data = "path/to/synthetic-grids/data"   # or set SYNTHETIC_GRIDS_DATA
+grid = "LV__Alps-Periurban__5238-11_1_3_grid"
+sg.grids(data)                    # all grids (index.csv + grid_id)
+sg.topology(grid, data)           # {"buses": df, "lines": df, "trafos": df, "loads": df, ...}
+sg.load_power(grid, data)         # load P/Q per timestamp
+sg.power_flow(grid, data, "bus")  # power-flow results; also "line", "trafo"
+sg.line_catalogue(data)           # cable catalogue
+```
+
 ## What's in `data/`
 
 Plain CSV/Parquet only — no pandapower or any other special package needed to read any of it.
